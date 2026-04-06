@@ -173,6 +173,145 @@ hudLog("STRATCOM v12.7 Fully Operational.");
 </script>
 </body>
 </html>
+  <div id="status" style="font-size: 10px; color: #ffcc00;">LINK: INITIALIZING PROXY...</div>
+  <div id="intel-log">> Deploying Global Proxy Bridge...<br>> Decoders Online...</div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+// --- 1. CORE INTEL (MILITARY HEX RANGES) ---
+const ICAO_RANGES = [
+    { start: 0xAE0000, end: 0xAFFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0xAD0000, end: 0xADFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0x43C000, end: 0x43CFFF, country: "United Kingdom 🇬🇧", type: "MILITARY" },
+    { start: 0x3F0000, end: 0x3FFFFF, country: "Germany 🇩🇪", type: "MILITARY" },
+    { start: 0x140000, end: 0x15FFFF, country: "Russia 🇷🇺", type: "MIL/GOV" },
+    { start: 0x780000, end: 0x7BFFFF, country: "China 🇨🇳", type: "MIL/GOV" }
+];
+
+const LEO_KEYWORDS = ["POLICE", "SHERIFF", "CUSTOMS", "CBP", "FBI", "JUSTICE", "DHS", "TROOPER", "DPS"];
+
+// --- 2. MAP INITIALIZATION ---
+const map = L.map('map', { zoomControl: false }).setView([38.89, -77.03], 6);
+const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png');
+
+// Live NEXRAD Weather Radar (Institutional WMS)
+const weatherMap = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
+    layers: 'nexrad-n0r-900913', format: 'image/png', transparent: true, opacity: 0.4
+});
+
+L.control.layers({"Ops Grid": darkMap}, {"Live NEXRAD Weather": weatherMap}).addTo(map);
+darkMap.addTo(map);
+
+const history = {};
+const flightLayers = L.layerGroup().addTo(map);
+
+const hudLog = (msg) => {
+    const log = document.getElementById('intel-log');
+    log.innerHTML = `> ${msg}<br>` + log.innerHTML;
+};
+
+// --- 3. DYNAMIC ICON ENGINE ---
+const getIcon = (isHeli, color, track) => {
+    const planeSVG = `<svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${track}deg);"><path fill="${color}" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`;
+    const heliSVG = `<svg viewBox="0 0 24 24" width="26" height="26" style="transform: rotate(${track}deg);"><path fill="${color}" d="M12 2c-5.52 0-10 4.48-10 10s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-4h2v4zm0-6h-2V6h2v4z"/><path fill="${color}" d="M11 6h2v8h-2zM4 11h16v2H4z"/></svg>`;
+    return L.divIcon({ html: isHeli ? heliSVG : planeSVG, className: 'ac-icon', iconSize: [24, 24], iconAnchor: [12, 12] });
+};
+
+const getIntel = (hex) => {
+    const val = parseInt(hex, 16);
+    const match = ICAO_RANGES.find(r => val >= r.start && val <= r.end);
+    return match || { country: "Civilian", type: "CIV" };
+};
+
+const analyzeMission = (ac, hist) => {
+    const type = (ac.t || "").toUpperCase();
+    if (["KC13", "KC46", "K35R"].includes(type)) return "AERIAL REFUELING PATTERN";
+    if (Math.abs(ac.baro_rate || 0) > 3500) return "TACTICAL CLIMB/DESCENT";
+    if (hist && hist.length > 15) {
+        let turnIntensity = 0;
+        for (let i = 1; i < hist.length; i++) turnIntensity += Math.abs(hist[i].h - hist[i-1].h);
+        if (turnIntensity > 180 && ac.gs < 180) return "SURVEILLANCE ORBIT / LOITER";
+    }
+    return "STANDARD TRANSIT";
+};
+
+// --- 4. DATA ENGINE (PROXIED FOR DEPLOYMENT) ---
+async function scrapeRadar() {
+    const center = map.getCenter();
+    const lat = center.lat.toFixed(3);
+    const lon = center.lng.toFixed(3);
+    
+    // The Direct API Link
+    const apiTarget = `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/300`;
+    
+    // The Proxy Bridge (Solves CORS errors on GitHub and Localhost)
+    const url = `https://corsproxy.io/?${encodeURIComponent(apiTarget)}`;
+
+    try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Proxy Server Busy");
+        
+        const data = await res.json();
+        const aircraft = data.ac || [];
+        
+        flightLayers.clearLayers();
+        document.getElementById('status').innerHTML = "LINK: <span style='color:#00ffcc;'>PROXIED_ACTIVE</span>";
+
+        aircraft.forEach(ac => {
+            if (!ac.lat || !ac.lon) return;
+
+            if (!history[ac.hex]) history[ac.hex] = [];
+            history[ac.hex].push({ p: [ac.lat, ac.lon], h: ac.track });
+            if (history[ac.hex].length > 40) history[ac.hex].shift();
+
+            const intel = getIntel(ac.hex);
+            const isMil = ac.mil === 1 || intel.type === "MILITARY" || intel.type === "MIL/GOV";
+            const owner = (ac.ownOp || "").toUpperCase();
+            const call = (ac.flight || "").toUpperCase();
+            const isLEO = LEO_KEYWORDS.some(k => owner.includes(k) || call.includes(k));
+            const isHeli = (ac.desc || "").includes("HELI") || (ac.t || "").startsWith("H");
+            const mission = analyzeMission(ac, history[ac.hex]);
+            
+            // Military Red / LEO Blue / Civilian Green
+            const color = isMil ? '#ff0000' : (isLEO ? '#0077ff' : '#00ffcc');
+            
+            L.polyline(history[ac.hex].map(h => h.p), { color: color, weight: 1.5, opacity: 0.4 }).addTo(flightLayers);
+            const marker = L.marker([ac.lat, ac.lon], { icon: getIcon(isHeli, color, ac.track || 0) }).addTo(flightLayers);
+
+            marker.bindPopup(`
+                <div class="popup-intel">
+                    ${isMil ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
+                    ${isLEO ? '<div class="leo-banner">LAW ENFORCEMENT</div>' : ''}
+                    <div style="font-size:14px; border-bottom:1px solid #000; padding-bottom:4px; margin-bottom:4px;">
+                        <b>ID:</b> ${ac.flight || 'GHOST'} | <b>HEX:</b> ${ac.hex.toUpperCase()}
+                    </div>
+                    <b>COUNTRY:</b> ${intel.country}<br>
+                    <b>MODEL:</b> ${ac.t || 'Unknown'}<br>
+                    <b>OWNER:</b> ${ac.ownOp || 'Confidential'}<br>
+                    <hr>
+                    <b>ALTITUDE:</b> ${ac.alt_baro} ft | <b>SPEED:</b> ${Math.round(ac.gs)} kt<br>
+                    <div class="mission-tag">MISSION: ${mission}</div>
+                </div>
+            `);
+        });
+        hudLog(`Satellite Sync: ${aircraft.length} assets locked.`);
+    } catch (e) {
+        document.getElementById('status').innerHTML = "LINK: <span style='color:red;'>FAILED (RETRYING)</span>";
+        hudLog(`ERR: Proxy rejected link. Refreshing...`);
+    }
+}
+
+setInterval(scrapeRadar, 15000); // 15 second update
+scrapeRadar();
+map.on('moveend', scrapeRadar);
+
+hudLog("STRATCOM v12.7 Fully Operational.");
+</script>
+</body>
+</html>
 
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script>
