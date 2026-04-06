@@ -140,6 +140,7 @@ const calcMission = (ac, hist) => {
 async function scrapeRadar() {
     const center = map.getCenter();
     const url = `https://api.adsb.lol/v2/lat/${center.lat}/lon/${center.lng}/dist/300`;
+const url = `https://corsproxy.io/?https://api.adsb.lol/v2/lat/${center.lat}/lon/${center.lng}/dist/300`;
 
     try {
         const res = await fetch(url);
