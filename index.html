@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>OSINT STRATCOM v13.0 - Private Bridge</title>
+<title>OSINT STRATCOM v13.1 - Strategic Overlays</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
@@ -19,21 +19,190 @@
     pointer-events: none;
   }
   #intel-log { 
-    height: 120px; overflow-y: auto; font-size: 11px; border-top: 1px solid #1a3a3a; 
+    height: 130px; overflow-y: auto; font-size: 11px; border-top: 1px solid #1a3a3a; 
     margin-top: 8px; padding-top: 5px; color: #00ccaa; pointer-events: auto; 
   }
   
   /* Map Popups */
   .leaflet-popup-content-wrapper { background: #ffffff !important; color: #000 !important; border-radius: 0px; border: 2px solid #333; }
   .popup-intel { font-family: 'Arial', sans-serif; font-size: 12px; line-height: 1.4; }
-  .mil-banner { background: #d32f2f; color: #fff; padding: 4px; font-weight: bold; text-align: center; margin-bottom: 5px; text-transform: uppercase; }
-  .leo-banner { background: #1976d2; color: #fff; padding: 4px; font-weight: bold; text-align: center; margin-bottom: 5px; }
+  .mil-banner { background: #d32f2f; color: #fff; padding: 4px; font-weight: bold; text-align: center; margin-bottom: 5px; }
+  .jam-banner { background: #ff9800; color: #000; padding: 4px; font-weight: bold; text-align: center; margin-bottom: 5px; border: 1px solid #000; }
   .mission-tag { background: #eeeeee; border: 1px dashed #444; padding: 4px; font-weight: bold; margin-top: 6px; display: block; text-align: center; color: #333; }
   .ac-icon { display: flex; justify-content: center; align-items: center; }
 </style>
 </head>
 <body>
 
+<div id="hud">
+  <div style="font-size: 20px; font-weight: bold; letter-spacing: 1px;">🛰️ STRATCOM v13.1</div>
+  <div id="status" style="font-size: 10px; color: #ffcc00;">UPLINK: INITIATING PRIVATE BRIDGE...</div>
+  <div id="intel-log">> Overlays Online...<br>> EW & Airspace Monitoring Active...</div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+// --- 1. CORE INTELLIGENCE DATABASES ---
+const ICAO_RANGES = [
+    { start: 0xAE0000, end: 0xAFFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0xAD0000, end: 0xADFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0x43C000, end: 0x43CFFF, country: "UK 🇬🇧", type: "MILITARY" },
+    { start: 0x140000, end: 0x15FFFF, country: "Russia 🇷🇺", type: "MIL/GOV" }
+];
+
+const LEO_KEYWORDS = ["POLICE", "SHERIFF", "CUSTOMS", "CBP", "FBI"];
+
+// --- 2. MAP & OVERLAYS INITIALIZATION ---
+const map = L.map('map', { zoomControl: false }).setView([38.89, -77.03], 7);
+const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+
+// Tactical Layers
+const flightLayers = L.layerGroup().addTo(map);
+const noFlyLayers = L.layerGroup().addTo(map);
+const ewLayers = L.layerGroup().addTo(map);
+
+// Weather
+const weatherMap = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
+    layers: 'nexrad-n0r-900913', format: 'image/png', transparent: true, opacity: 0.4
+});
+
+L.control.layers(
+    {"Ops Grid": darkMap}, 
+    {
+        "Live Weather Radar": weatherMap, 
+        "Restricted Airspace (Red)": noFlyLayers,
+        "Active EW / Jamming (Yellow)": ewLayers
+    }
+).addTo(map);
+
+// --- RESTRICTED AIRSPACE ZONES ---
+const zones = [
+    { name: "DC P-56 Restricted", lat: 38.889, lon: -77.035, radius: 25000 },
+    { name: "Camp David P-40", lat: 39.648, lon: -77.463, radius: 10000 },
+    { name: "Groom Lake (Area 51)", lat: 37.235, lon: -115.811, radius: 40000 }
+];
+
+zones.forEach(z => {
+    L.circle([z.lat, z.lon], { color: '#ff0000', fillColor: '#ff0000', fillOpacity: 0.15, radius: z.radius, weight: 2 })
+     .bindPopup(`<b>RESTRICTED AIRSPACE:</b><br>${z.name}`)
+     .addTo(noFlyLayers);
+});
+
+// --- ELECTRONIC WARFARE (EW) ZONES ---
+// Example simulated GPS jamming zone
+L.circle([38.5, -76.5], { color: '#ffcc00', fillColor: '#ffcc00', fillOpacity: 0.2, radius: 30000, dashArray: "10, 10" })
+ .bindPopup(`<b>EW WARNING:</b><br>Active GPS Jamming Detected`)
+ .addTo(ewLayers);
+
+const history = {};
+
+// --- 3. UTILITIES & LOGIC ---
+const hudLog = (msg) => {
+    const log = document.getElementById('intel-log');
+    log.innerHTML = `> ${msg}<br>` + log.innerHTML;
+};
+
+const getIcon = (isHeli, color, track, isJammed) => {
+    // If jammed, give the icon an orange/yellow warning tint
+    const finalColor = isJammed ? "#ff9800" : color; 
+    const planeSVG = `<svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${track}deg);"><path fill="${finalColor}" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`;
+    const heliSVG = `<svg viewBox="0 0 24 24" width="26" height="26" style="transform: rotate(${track}deg);"><path fill="${finalColor}" d="M12 2c-5.52 0-10 4.48-10 10s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-4h2v4zm0-6h-2V6h2v4z"/><path fill="${finalColor}" d="M11 6h2v8h-2zM4 11h16v2H4z"/></svg>`;
+    return L.divIcon({ html: isHeli ? heliSVG : planeSVG, className: 'ac-icon', iconSize: [24, 24], iconAnchor: [12, 12] });
+};
+
+const getIntel = (hex) => {
+    const val = parseInt(hex, 16);
+    const match = ICAO_RANGES.find(r => val >= r.start && val <= r.end);
+    return match || { country: "Civilian", type: "CIV" };
+};
+
+// Check if a coordinate is inside a restricted zone
+const checkIncursion = (lat, lon, flightId) => {
+    zones.forEach(z => {
+        const distance = map.distance([lat, lon], [z.lat, z.lon]);
+        if (distance < z.radius) {
+            hudLog(`<span style="color:red; font-weight:bold;">ALERT: ${flightId} entered ${z.name}!</span>`);
+        }
+    });
+};
+
+// --- 4. DATA ENGINE (PRIVATE CLOUDFLARE BRIDGE) ---
+async function scrapeRadar() {
+    const center = map.getCenter();
+    const apiTarget = `https://api.adsb.lol/v2/lat/${center.lat.toFixed(3)}/lon/${center.lng.toFixed(3)}/dist/300`;
+    
+    // YOUR PRIVATE WORKER BRIDGE
+    const bridgeUrl = `https://adsb-bridge.lezattackpenguinskindig.workers.dev/?url=${encodeURIComponent(apiTarget)}`;
+
+    try {
+        const res = await fetch(bridgeUrl);
+        if (!res.ok) throw new Error("Bridge response error");
+        
+        const data = await res.json();
+        const aircraft = data.ac || [];
+        
+        flightLayers.clearLayers();
+        document.getElementById('status').innerHTML = "UPLINK: <span style='color:#00ffcc;'>SECURE_BRIDGE_ACTIVE</span>";
+
+        aircraft.forEach(ac => {
+            if (!ac.lat || !ac.lon) return;
+
+            // Trail History
+            if (!history[ac.hex]) history[ac.hex] = [];
+            history[ac.hex].push({ p: [ac.lat, ac.lon], h: ac.track });
+            if (history[ac.hex].length > 40) history[ac.hex].shift();
+
+            // Intelligence
+            const intel = getIntel(ac.hex);
+            const isMil = ac.mil === 1 || intel.type === "MILITARY";
+            const owner = (ac.ownOp || "").toUpperCase();
+            const call = (ac.flight || "GHOST").toUpperCase();
+            const isLEO = LEO_KEYWORDS.some(k => owner.includes(k) || call.includes(k));
+            const isHeli = (ac.desc || "").includes("HELI") || (ac.t || "").startsWith("H");
+            
+            // Jamming Detection (NIC < 6 indicates heavily degraded GPS)
+            const isJammed = ac.nic !== undefined && ac.nic < 6;
+            
+            // Airspace Incursion Check (Only logs if it's a new entry)
+            if (Math.random() > 0.95) checkIncursion(ac.lat, ac.lon, call); 
+
+            // Priority colors
+            const color = isMil ? '#ff0000' : (isLEO ? '#0077ff' : '#00ffcc');
+            
+            // Draw Trails
+            L.polyline(history[ac.hex].map(h => h.p), { color: isJammed ? '#ff9800' : color, weight: 1.5, opacity: 0.4 }).addTo(flightLayers);
+            const marker = L.marker([ac.lat, ac.lon], { icon: getIcon(isHeli, color, ac.track || 0, isJammed) }).addTo(flightLayers);
+
+            marker.bindPopup(`
+                <div class="popup-intel">
+                    ${isMil ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
+                    ${isJammed ? '<div class="jam-banner">⚠️ GPS JAMMING DETECTED</div>' : ''}
+                    <div style="font-size:14px; border-bottom:1px solid #000; padding-bottom:4px; margin-bottom:4px;">
+                        <b>ID:</b> ${call} | <b>HEX:</b> ${ac.hex.toUpperCase()}
+                    </div>
+                    <b>COUNTRY:</b> ${intel.country}<br>
+                    <b>MODEL:</b> ${ac.t || 'Unknown'}<br>
+                    <hr>
+                    <b>ALT:</b> ${ac.alt_baro} ft | <b>SPD:</b> ${Math.round(ac.gs)} kt<br>
+                    <b>NAV INTEGRITY (NIC):</b> ${ac.nic !== undefined ? ac.nic : 'N/A'} ${isJammed ? '(DEGRADED)' : '(STABLE)'}
+                </div>
+            `);
+        });
+        hudLog(`Radar Sweep: ${aircraft.length} targets tracked.`);
+    } catch (e) {
+        document.getElementById('status').innerHTML = "UPLINK: <span style='color:red;'>BRIDGE_OFFLINE</span>";
+    }
+}
+
+setInterval(scrapeRadar, 15000); 
+scrapeRadar();
+map.on('moveend', scrapeRadar);
+hudLog("STRATCOM v13.1 Airspace Overlays Active.");
+</script>
+</body>
+</html>
 <div id="hud">
   <div style="font-size: 20px; font-weight: bold; letter-spacing: 1px;">🛰️ STRATCOM v13.0</div>
   <div id="status" style="font-size: 10px; color: #ffcc00;">UPLINK: INITIATING PRIVATE BRIDGE...</div>
