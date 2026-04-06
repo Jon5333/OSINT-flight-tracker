@@ -122,13 +122,27 @@ const calcMission = (ac, hist) => {
 
 // --- 5. MAIN SCANNER ---
 async function scrapeRadar() {
-    hudLog("Pinging API...");
     const center = map.getCenter();
-    const url = `https://api.adsb.lol/v2/lat/${center.lat.toFixed(4)}/lon/${center.lng.toFixed(4)}/dist/300`;
+    
+    // SAFETY CHECK: Prevent 400 Error if map isn't ready
+    if (!center || !center.lat || !center.lng || (center.lat === 0 && center.lng === 0)) {
+        hudLog("<span style='color:yellow'>WAITING: Stabilizing GPS...</span>");
+        return; 
+    }
+
+    hudLog("Pinging API...");
+    
+    // CLEAN COORDINATES: Rounding to 4 decimal places
+    const lat = center.lat.toFixed(4);
+    const lon = center.lng.toFixed(4);
+    const url = `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/300`;
 
     try {
         const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+            // If we still get a 400, this will tell us exactly what was sent
+            throw new Error(`HTTP ${res.status} (Sent: ${lat}, ${lon})`);
+        }
         
         const data = await res.json();
         const aircraft = data.ac || [];
@@ -155,12 +169,9 @@ async function scrapeRadar() {
 
             marker.bindPopup(`
                 <div class="popup-intel">
-                    ${isMil ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
-                    ${agency ? `<div class="leo-banner">LAW ENFORCEMENT</div>` : ''}
-                    <b>ID:</b> ${ac.flight || 'NOSIGN'} | <b>HEX:</b> ${ac.hex.toUpperCase()}<br>
-                    <b>TYPE:</b> ${ac.t || 'Unknown Model'}<br>
-                    <div class="mission-tag">MISSION: ${mission}</div><br>
-                    <b>ALT:</b> ${ac.alt_baro} ft | <b>SPD:</b> ${Math.round(ac.gs)} kts<br>
+                    <b>ID:</b> ${ac.flight || 'NOSIGN'}<br>
+                    <b>TYPE:</b> ${ac.t || 'UNK'}<br>
+                    <b>MISSION:</b> ${mission}
                 </div>
             `);
         }
@@ -168,6 +179,8 @@ async function scrapeRadar() {
     } catch (e) {
         hudLog(`<span style="color:orange; font-weight:bold;">API ERR: ${e.message}</span>`);
     }
+}
+
 }
 
 // Start sequence
