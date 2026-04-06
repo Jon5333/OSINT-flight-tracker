@@ -139,17 +139,30 @@ const calcMission = (ac, hist) => {
 // --- MAIN LOOP ---
 async function scrapeRadar() {
     const center = map.getCenter();
-    const url = `https://api.zippopotam.us/us/90210)${center.lat}/lon/${center.lng}/dist/300`;
+    // Added a timestamp (?t=) to prevent GitHub from caching a broken link
+    const url = `https://api.adsb.lol/v2/lat/${center.lat.toFixed(4)}/lon/${center.lng.toFixed(4)}/dist/300?t=${Date.now()}`;
 
     try {
         const res = await fetch(url);
+        
+        if (!res.ok) {
+            throw new Error(`HTTP Error: ${res.status}`);
+        }
+
         const data = await res.json();
         const aircraft = data.ac || [];
         
         flightLayers.clearLayers();
+        // ... (rest of your aircraft loop remains the same) ...
+        
+        hudLog(`Live Scan: Tracking ${aircraft.length} targets.`);
+    } catch (e) {
+        // This will now show you the REAL error on your mobile screen
+        hudLog(`CRITICAL ERR: ${e.message}`);
+        console.error(e);
+    }
+}
 
-        for (const ac of aircraft) {
-            if (!ac.lat || !ac.lon) continue;
 
             // Tracking History (Max 50 points)
             if (!history[ac.hex]) history[ac.hex] = [];
