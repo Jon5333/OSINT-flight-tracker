@@ -139,7 +139,7 @@ const calcMission = (ac, hist) => {
 // --- MAIN LOOP ---
 async function scrapeRadar() {
     const center = map.getCenter();
-    const url = `https://api.adsb.lol/v2/lat/${center.lat}/lon/${center.lng}/dist/300`;
+    const url = `https://api.zippopotam.us/us/90210)${center.lat}/lon/${center.lng}/dist/300`;
 
     try {
         const res = await fetch(url);
