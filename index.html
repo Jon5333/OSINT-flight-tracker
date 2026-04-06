@@ -102,24 +102,33 @@ const analyzeMission = (ac, hist) => {
 // --- 4. DATA ENGINE (PROXIED FOR DEPLOYMENT) ---
 async function scrapeRadar() {
     const center = map.getCenter();
-    const lat = center.lat.toFixed(3);
-    const lon = center.lng.toFixed(3);
+    const apiTarget = `https://api.adsb.lol/v2/lat/${center.lat.toFixed(3)}/lon/${center.lng.toFixed(3)}/dist/300`;
     
-    // The Direct API Link
-    const apiTarget = `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/300`;
-    
-    // The Proxy Bridge (Solves CORS errors on GitHub and Localhost)
-    const url = `https://corsproxy.io/?${encodeURIComponent(apiTarget)}`;
+    // Primary Proxy
+    const primaryUrl = `https://corsproxy.io/?${encodeURIComponent(apiTarget)}`;
+    // Secondary Proxy (Failover)
+    const secondaryUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiTarget)}`;
 
     try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("Proxy Server Busy");
+        document.getElementById('status').innerHTML = "LINK: <span style='color:orange;'>TRYING PRIMARY...</span>";
         
-        const data = await res.json();
+        let response = await fetch(primaryUrl);
+        let data;
+
+        if (response.ok) {
+            data = await response.json();
+        } else {
+            // IF PRIMARY FAILS, TRY SECONDARY
+            hudLog("Primary Proxy Rejected. Switching to Failover...");
+            document.getElementById('status').innerHTML = "LINK: <span style='color:orange;'>FAILOVER ACTIVE</span>";
+            let fallbackRes = await fetch(secondaryUrl);
+            let wrappedData = await fallbackRes.json();
+            data = JSON.parse(wrappedData.contents); // allorigins wraps data in 'contents'
+        }
+
         const aircraft = data.ac || [];
-        
         flightLayers.clearLayers();
-        document.getElementById('status').innerHTML = "LINK: <span style='color:#00ffcc;'>PROXIED_ACTIVE</span>";
+        document.getElementById('status').innerHTML = "LINK: <span style='color:#00ffcc;'>STABLE</span>";
 
         aircraft.forEach(ac => {
             if (!ac.lat || !ac.lon) return;
@@ -129,15 +138,9 @@ async function scrapeRadar() {
             if (history[ac.hex].length > 40) history[ac.hex].shift();
 
             const intel = getIntel(ac.hex);
-            const isMil = ac.mil === 1 || intel.type === "MILITARY" || intel.type === "MIL/GOV";
-            const owner = (ac.ownOp || "").toUpperCase();
-            const call = (ac.flight || "").toUpperCase();
-            const isLEO = LEO_KEYWORDS.some(k => owner.includes(k) || call.includes(k));
+            const isMil = ac.mil === 1 || intel.type === "MILITARY";
+            const color = isMil ? '#ff0000' : '#00ffcc';
             const isHeli = (ac.desc || "").includes("HELI") || (ac.t || "").startsWith("H");
-            const mission = analyzeMission(ac, history[ac.hex]);
-            
-            // Military Red / LEO Blue / Civilian Green
-            const color = isMil ? '#ff0000' : (isLEO ? '#0077ff' : '#00ffcc');
             
             L.polyline(history[ac.hex].map(h => h.p), { color: color, weight: 1.5, opacity: 0.4 }).addTo(flightLayers);
             const marker = L.marker([ac.lat, ac.lon], { icon: getIcon(isHeli, color, ac.track || 0) }).addTo(flightLayers);
@@ -145,25 +148,18 @@ async function scrapeRadar() {
             marker.bindPopup(`
                 <div class="popup-intel">
                     ${isMil ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
-                    ${isLEO ? '<div class="leo-banner">LAW ENFORCEMENT</div>' : ''}
-                    <div style="font-size:14px; border-bottom:1px solid #000; padding-bottom:4px; margin-bottom:4px;">
-                        <b>ID:</b> ${ac.flight || 'GHOST'} | <b>HEX:</b> ${ac.hex.toUpperCase()}
-                    </div>
-                    <b>COUNTRY:</b> ${intel.country}<br>
-                    <b>MODEL:</b> ${ac.t || 'Unknown'}<br>
-                    <b>OWNER:</b> ${ac.ownOp || 'Confidential'}<br>
-                    <hr>
-                    <b>ALTITUDE:</b> ${ac.alt_baro} ft | <b>SPEED:</b> ${Math.round(ac.gs)} kt<br>
-                    <div class="mission-tag">MISSION: ${mission}</div>
+                    <b>ID:</b> ${ac.flight || 'GHOST'} | <b>HEX:</b> ${ac.hex.toUpperCase()}<br>
+                    <b>ALT:</b> ${ac.alt_baro} ft | <b>SPD:</b> ${Math.round(ac.gs)} kt
                 </div>
             `);
         });
-        hudLog(`Satellite Sync: ${aircraft.length} assets locked.`);
+        hudLog(`Satellite Sync: ${aircraft.length} units.`);
     } catch (e) {
-        document.getElementById('status').innerHTML = "LINK: <span style='color:red;'>FAILED (RETRYING)</span>";
-        hudLog(`ERR: Proxy rejected link. Refreshing...`);
+        document.getElementById('status').innerHTML = "LINK: <span style='color:red;'>CRITICAL FAILURE</span>";
+        hudLog(`ERR: Both proxies failed. Retrying in 15s...`);
     }
 }
+
 
 setInterval(scrapeRadar, 15000); // 15 second update
 scrapeRadar();
