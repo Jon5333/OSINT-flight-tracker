@@ -198,3 +198,167 @@ hudLog("STRATCOM v13.2 Initialized.");
 </script>
 </body>
 </html>
+<div id="hud">
+  <div style="font-size: 20px; font-weight: bold; letter-spacing: 1px;">🛰️ STRATCOM v13.2</div>
+  <div id="status" style="font-size: 10px; color: #ffcc00;">UPLINK: INITIATING SYSTEM...</div>
+  <div id="intel-log">> Overlays Online...<br>> EW & Airspace Monitoring Active...</div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+// --- 1. CORE INTEL ---
+const ICAO_RANGES = [
+    { start: 0xAE0000, end: 0xAFFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0xAD0000, end: 0xADFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0x43C000, end: 0x43CFFF, country: "UK 🇬🇧", type: "MILITARY" },
+    { start: 0x140000, end: 0x15FFFF, country: "Russia 🇷🇺", type: "MIL/GOV" }
+];
+
+const LEO_KEYWORDS = ["POLICE", "SHERIFF", "CUSTOMS", "CBP", "FBI"];
+
+// --- 2. MAP & OVERLAYS ---
+const map = L.map('map', { zoomControl: false }).setView([38.89, -77.03], 7);
+const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+
+const flightLayers = L.layerGroup().addTo(map);
+const noFlyLayers = L.layerGroup().addTo(map);
+const ewLayers = L.layerGroup().addTo(map);
+
+const weatherMap = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
+    layers: 'nexrad-n0r-900913', format: 'image/png', transparent: true, opacity: 0.4
+});
+
+L.control.layers(
+    {"Ops Grid": darkMap}, 
+    {
+        "Live Weather Radar": weatherMap, 
+        "Restricted Airspace (Red)": noFlyLayers,
+        "Active EW / Jamming (Yellow)": ewLayers
+    }
+).addTo(map);
+
+// --- RESTRICTED AIRSPACE ZONES ---
+const zones = [
+    { name: "DC P-56 Restricted", lat: 38.889, lon: -77.035, radius: 25000 },
+    { name: "Camp David P-40", lat: 39.648, lon: -77.463, radius: 10000 },
+    { name: "Groom Lake (Area 51)", lat: 37.235, lon: -115.811, radius: 40000 }
+];
+
+zones.forEach(z => {
+    L.circle([z.lat, z.lon], { color: '#ff0000', fillColor: '#ff0000', fillOpacity: 0.15, radius: z.radius, weight: 2 })
+     .bindPopup(`<b>RESTRICTED AIRSPACE:</b><br>${z.name}`)
+     .addTo(noFlyLayers);
+});
+
+// --- ELECTRONIC WARFARE (EW) ZONES ---
+L.circle([38.5, -76.5], { color: '#ffcc00', fillColor: '#ffcc00', fillOpacity: 0.2, radius: 30000, dashArray: "10, 10" })
+ .bindPopup(`<b>EW WARNING:</b><br>Active GPS Jamming Detected`)
+ .addTo(ewLayers);
+
+const history = {};
+
+// --- 3. UTILITIES ---
+const hudLog = (msg) => {
+    const log = document.getElementById('intel-log');
+    log.innerHTML = `> ${msg}<br>` + log.innerHTML;
+};
+
+const getIcon = (isHeli, color, track, isJammed) => {
+    const finalColor = isJammed ? "#ff9800" : color; 
+    const svg = isHeli ? 
+    `<svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${track}deg);"><path fill="${finalColor}" d="M12 2c-5.52 0-10 4.48-10 10s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-4h2v4zm0-6h-2V6h2v4z"/><path fill="${finalColor}" d="M11 6h2v8h-2zM4 11h16v2H4z"/></svg>` :
+    `<svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${track}deg);"><path fill="${finalColor}" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`;
+    return L.divIcon({ html: svg, className: 'ac-icon', iconSize: [24, 24], iconAnchor: [12, 12] });
+};
+
+const getIntel = (hex) => {
+    const val = parseInt(hex, 16);
+    const match = ICAO_RANGES.find(r => val >= r.start && val <= r.end);
+    return match || { country: "Civilian", type: "CIV" };
+};
+
+const checkIncursion = (lat, lon, flightId) => {
+    zones.forEach(z => {
+        const distance = map.distance([lat, lon], [z.lat, z.lon]);
+        if (distance < z.radius) {
+            hudLog(`<span style="color:red; font-weight:bold;">ALERT: ${flightId} entered ${z.name}!</span>`);
+        }
+    });
+};
+
+// --- 4. DATA ENGINE (ANTI-FREEZE PROTOCOLS) ---
+async function scrapeRadar() {
+    const center = map.getCenter();
+    
+    // 🚨 REDUCED RADIUS TO 100 NM TO PREVENT TIMEOUTS
+    const apiTarget = `https://api.adsb.lol/v2/lat/${center.lat.toFixed(3)}/lon/${center.lng.toFixed(3)}/dist/100`;
+    const bridgeUrl = `https://adsb-bridge.lezattackpenguinskindig.workers.dev/?url=${encodeURIComponent(apiTarget)}`;
+
+    try {
+        document.getElementById('status').innerHTML = "UPLINK: <span style='color:orange;'>FETCHING TELEMETRY...</span>";
+
+        // 🚨 10-SECOND TIMEOUT (Prevents the map from getting permanently stuck)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const res = await fetch(bridgeUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        document.getElementById('status').innerHTML = "UPLINK: <span style='color:orange;'>DECODING JSON...</span>";
+        const data = await res.json();
+        const aircraft = data.ac || [];
+        
+        flightLayers.clearLayers();
+        document.getElementById('status').innerHTML = "UPLINK: <span style='color:#00ffcc;'>SECURE_BRIDGE_ACTIVE</span>";
+
+        aircraft.forEach(ac => {
+            if (!ac.lat || !ac.lon) return;
+
+            if (!history[ac.hex]) history[ac.hex] = [];
+            history[ac.hex].push({ p: [ac.lat, ac.lon], h: ac.track });
+            if (history[ac.hex].length > 40) history[ac.hex].shift();
+
+            const intel = getIntel(ac.hex);
+            const isMil = ac.mil === 1 || intel.type === "MILITARY";
+            const call = (ac.flight || "GHOST").toUpperCase();
+            const isJammed = ac.nic !== undefined && ac.nic < 6;
+            
+            if (Math.random() > 0.95) checkIncursion(ac.lat, ac.lon, call); 
+
+            const color = isMil ? '#ff0000' : '#00ffcc';
+            
+            L.polyline(history[ac.hex].map(h => h.p), { color: isJammed ? '#ff9800' : color, weight: 1.5, opacity: 0.4 }).addTo(flightLayers);
+            const marker = L.marker([ac.lat, ac.lon], { icon: getIcon(false, color, ac.track || 0, isJammed) }).addTo(flightLayers);
+
+            marker.bindPopup(`
+                <div class="popup-intel">
+                    ${isMil ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
+                    ${isJammed ? '<div class="jam-banner">⚠️ GPS JAMMING DETECTED</div>' : ''}
+                    <b>ID:</b> ${call} | <b>HEX:</b> ${ac.hex.toUpperCase()}<br>
+                    <b>ALT:</b> ${ac.alt_baro} ft | <b>SPD:</b> ${Math.round(ac.gs)} kt<br>
+                    <b>NIC SCORE:</b> ${ac.nic !== undefined ? ac.nic : 'N/A'}
+                </div>
+            `);
+        });
+    } catch (e) {
+        if (e.name === 'AbortError') {
+            document.getElementById('status').innerHTML = "UPLINK: <span style='color:red;'>TIMEOUT (RETRYING)</span>";
+            hudLog("ERR: API Response took too long.");
+        } else {
+            document.getElementById('status').innerHTML = "UPLINK: <span style='color:red;'>BRIDGE_OFFLINE</span>";
+            hudLog(`ERR: ${e.message}`);
+        }
+    }
+}
+
+setInterval(scrapeRadar, 15000); 
+scrapeRadar();
+map.on('moveend', scrapeRadar);
+hudLog("STRATCOM v13.2 Initialized.");
+</script>
+</body>
+</html>
