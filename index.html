@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OSINT STRATCOM v11.0 - Tactical Command</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<style>
+  html, body { margin:0; height:100%; background:#050505; font-family: 'Courier New', monospace; color: #00ffcc; overflow: hidden; }
+  #map { width:100%; height:100%; background: #000; }
+  
+  /* Tactical HUD */
+  #hud { 
+    position: absolute; top: 15px; left: 15px; width: 360px; 
+    background: rgba(5, 5, 10, 0.95); border: 1px solid #00ffcc; 
+    padding: 15px; z-index: 1000; box-shadow: 0 0 20px rgba(0,255,204,0.2);
+  }
+  #intel-log { height: 140px; overflow-y: auto; font-size: 11px; border-top: 1px solid #1a3a3a; margin-top: 10px; padding-top: 5px; color: #00ffaa; }
+  
+  /* Popups */
+  .leaflet-popup-content-wrapper { background: #ffffff !important; color: #000000 !important; border-radius: 0px; border: 2px solid #333; }
+  .leaflet-popup-tip { background: #ffffff !important; }
+  .popup-intel { font-family: 'Arial', sans-serif; font-size: 12px; line-height: 1.4; }
+  .mil-banner { background: #cc0000; color: #ffffff; padding: 4px; font-weight: bold; text-align: center; margin-bottom: 5px; letter-spacing: 1px; }
+  .leo-banner { background: #0033cc; color: #ffffff; padding: 4px; font-weight: bold; text-align: center; margin-bottom: 5px; }
+  .mission-tag { background: #eee; border: 1px dashed #333; padding: 3px; font-weight: bold; margin-top: 4px; display: inline-block; }
+  
+  /* CSS Rotated Icons */
+  .ac-icon { display: flex; justify-content: center; align-items: center; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div style="font-size: 20px; font-weight: bold;">🛰️ STRATCOM v11.0</div>
+  <div style="font-size: 10px; color: #888;">AGENTS: ACTIVE | RADAR: LIVE</div>
+  <div id="intel-log">> Booting Hex-Decoders...<br>> Activating Weather WMS...</div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+// --- CORE INTEL DICTIONARIES ---
+const ICAO_RANGES = [
+    { start: 0xAE0000, end: 0xAFFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0xAD0000, end: 0xADFFFF, country: "USA 🇺🇸", type: "MILITARY" },
+    { start: 0xA00000, end: 0xAFFFFF, country: "USA 🇺🇸", type: "CIVILIAN" },
+    { start: 0x43C000, end: 0x43CFFF, country: "UK 🇬🇧", type: "MILITARY" },
+    { start: 0x400000, end: 0x43FFFF, country: "UK 🇬🇧", type: "CIVILIAN" },
+    { start: 0x3F0000, end: 0x3FFFFF, country: "Germany 🇩🇪", type: "MILITARY" },
+    { start: 0x140000, end: 0x15FFFF, country: "Russia 🇷🇺", type: "CIVILIAN/MIL" },
+    { start: 0x780000, end: 0x7BFFFF, country: "China 🇨🇳", type: "CIVILIAN/MIL" },
+    { start: 0xC00000, end: 0xC3FFFF, country: "Canada 🇨🇦", type: "CIVILIAN" }
+];
+
+const LEO_AGENCIES = {
+    "CBP": ["TROY", "OMAHA", "CUSTOMS"],
+    "FBI": ["NG RESEARCH", "OTV LEASING", "FVX RESEARCH", "KQM AVIATION", "OBR LEASING"],
+    "POLICE": ["POLICE", "SHERIFF", "HIGHWAY PATROL", "DEPT OF PUBLIC SAFETY"]
+};
+
+// --- MAP & LAYERS ---
+const map = L.map('map', { zoomControl: false }).setView([38.89, -77.03], 6);
+const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png');
+
+// Live NEXRAD Weather Radar (IEM) - Highly Reliable
+const weatherMap = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
+    layers: 'nexrad-n0r-900913', format: 'image/png', transparent: true, opacity: 0.6
+});
+
+L.control.layers({"Dark Ops Base": darkMap}, {"Live NEXRAD Radar": weatherMap}).addTo(map);
+darkMap.addTo(map);
+
+// NO-FLY ZONES
+const noFlyZones = [
+    { name: "RESTRICTED: Ukraine", coords: [48.3794, 31.1656], r: 600000 },
+    { name: "RESTRICTED: Middle East", coords: [33.0, 35.0], r: 250000 },
+    { name: "PROHIBITED: DC P-56", coords: [38.89, -77.03], r: 10000 }
+];
+noFlyZones.forEach(z => {
+    L.circle(z.coords, { radius: z.r, color: '#ff0000', weight: 2, fillOpacity: 0.1, dashArray: '5,5' })
+     .addTo(map).bindTooltip(z.name);
+});
+
+const history = {};
+const routeCache = {};
+const flightLayers = L.layerGroup().addTo(map);
+
+const hudLog = (msg) => {
+    const log = document.getElementById('intel-log');
+    log.innerHTML = `> ${msg}<br>` + log.innerHTML;
+};
+
+// --- ICONS (SVG PIXEL ART) ---
+const getIcon = (isHeli, color, track) => {
+    const planeSVG = `<svg viewBox="0 0 24 24" width="22" height="22" style="transform: rotate(${track}deg);"><path fill="${color}" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`;
+    const heliSVG = `<svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${track}deg);"><path fill="${color}" d="M12 2c-5.52 0-10 4.48-10 10s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-4h2v4zm0-6h-2V6h2v4z"/><path fill="${color}" d="M11 6h2v8h-2zM4 11h16v2H4z"/></svg>`;
+    
+    return L.divIcon({
+        html: isHeli ? heliSVG : planeSVG,
+        className: 'ac-icon',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+    });
+};
+
+// --- INTELLIGENCE ENGINE ---
+const analyzeHex = (hex) => {
+    const val = parseInt(hex, 16);
+    const match = ICAO_RANGES.find(r => val >= r.start && val <= r.end);
+    return match ? match : { country: "Unknown/International", type: "CIVILIAN" };
+};
+
+const getAgency = (ownOp, callsign) => {
+    ownOp = (ownOp || "").toUpperCase();
+    callsign = (callsign || "").toUpperCase();
+    for (const [agency, keywords] of Object.entries(LEO_AGENCIES)) {
+        if (keywords.some(k => ownOp.includes(k) || callsign.includes(k))) return agency;
+    }
+    return null;
+};
+
+const calcMission = (ac, hist) => {
+    const type = (ac.t || "").toUpperCase();
+    if (["KC13", "KC46", "K35R"].includes(type)) return "AERIAL REFUELING (RACETRACK)";
+    if (Math.abs(ac.baro_rate) > 3500) return "TACTICAL MANEUVERS / EVASION";
+    
+    // Heading Variance for Orbits
+    if (hist.length > 8) {
+        let turns = 0;
+        for (let i = 1; i < hist.length; i++) {
+            if (Math.abs(hist[i].h - hist[i-1].h) > 15) turns++;
+        }
+        if (turns > 4 && ac.gs < 180) return "SURVEILLANCE ORBIT / LOITERING";
+    }
+    return "EN ROUTE / TRANSIT";
+};
+
+// --- MAIN LOOP ---
+async function scrapeRadar() {
+    const center = map.getCenter();
+    const url = `https://api.adsb.lol/v2/lat/${center.lat}/lon/${center.lng}/dist/300`;
+
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        const aircraft = data.ac || [];
+        
+        flightLayers.clearLayers();
+
+        for (const ac of aircraft) {
+            if (!ac.lat || !ac.lon) continue;
+
+            // Tracking History (Max 50 points)
+            if (!history[ac.hex]) history[ac.hex] = [];
+            history[ac.hex].push({ p: [ac.lat, ac.lon], h: ac.track });
+            if (history[ac.hex].length > 50) history[ac.hex].shift();
+
+            // Intelligence Extraction
+            const intel = analyzeHex(ac.hex);
+            const isMil = ac.mil === 1 || intel.type === "MILITARY";
+            const agency = getAgency(ac.ownOp, ac.flight);
+            const isHeli = (ac.desc || "").includes("HELICOPTER") || (ac.t || "").startsWith("H");
+            const mission = calcMission(ac, history[ac.hex]);
+            
+            // Icon & Color Logic
+            const color = isMil ? '#cc0000' : (agency ? '#0033cc' : '#00ffcc');
+            
+            // Draw Trail
+            L.polyline(history[ac.hex].map(h => h.p), { color: color, weight: 1.5, opacity: 0.6 }).addTo(flightLayers);
+            
+            // Draw Pixel Icon
+            const marker = L.marker([ac.lat, ac.lon], { icon: getIcon(isHeli, color, ac.track || 0) }).addTo(flightLayers);
+
+            // Fetch Route (Mocked bot delay for realism if not in cache)
+            if (!routeCache[ac.hex]) {
+                routeCache[ac.hex] = (ac.flight && !isMil && !agency) ? "Scraping databases..." : "RESTRICTED/UNPUBLISHED";
+                if (ac.flight && !isMil && !agency) {
+                    setTimeout(() => { routeCache[ac.hex] = "Origin/Dest unknown in public DB"; }, 2000); 
+                }
+            }
+
+            // High Contrast Popup
+            marker.bindPopup(`
+                <div class="popup-intel">
+                    ${isMil ? '<div class="mil-banner">⚠️ MILITARY ASSET DETECTED ⚠️</div>' : ''}
+                    ${agency ? `<div class="leo-banner">🚔 LAW ENFORCEMENT (${agency}) 🚔</div>` : ''}
+                    <div style="font-size:14px; border-bottom:1px solid #000; margin-bottom:5px;">
+                        <b>ID:</b> ${ac.flight || 'NOSIGN'} | <b>HEX:</b> ${ac.hex.toUpperCase()}
+                    </div>
+                    <b>TYPE:</b> ${isHeli ? 'Rotary-Wing' : 'Fixed-Wing'} (${ac.t || 'Unknown Model'})<br>
+                    <b>COUNTRY:</b> ${intel.country}<br>
+                    <b>OWNER:</b> ${ac.ownOp || 'Confidential'}<br>
+                    <div class="mission-tag">MISSION: ${mission}</div>
+                    <hr>
+                    <b>ALT:</b> ${ac.alt_baro} ft | <b>SPEED:</b> ${Math.round(ac.gs)} kts | <b>HDG:</b> ${Math.round(ac.track)}&deg;<br>
+                    <b>FLIGHT PLAN:</b> ${routeCache[ac.hex]}<br>
+                    <b>GPS NIC:</b> ${ac.nic} ${ac.nic < 7 ? '<span style="color:red">(WARNING: DEGRADED)</span>' : ''}
+                </div>
+            `);
+        }
+        hudLog(`Live Scan: Tracking ${aircraft.length} targets.`);
+    } catch (e) {
+        hudLog("ERR: Re-establishing API Link...");
+    }
+}
+
+setInterval(scrapeRadar, 15000);
+scrapeRadar();
+map.on('moveend', scrapeRadar);
+
+hudLog("WMS Radar initialized. ICAO decoders active.");
+</script>
+</body>
+</html>
