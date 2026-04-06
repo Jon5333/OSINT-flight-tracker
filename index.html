@@ -124,25 +124,29 @@ const calcMission = (ac, hist) => {
 async function scrapeRadar() {
     const center = map.getCenter();
     
-    // SAFETY CHECK: Prevent 400 Error if map isn't ready
-    if (!center || !center.lat || !center.lng || (center.lat === 0 && center.lng === 0)) {
-        hudLog("<span style='color:yellow'>WAITING: Stabilizing GPS...</span>");
+    if (!center || !center.lat) {
+        hudLog("<span style='color:yellow'>MAP NOT READY</span>");
         return; 
     }
 
-    hudLog("Pinging API...");
+    hudLog("Pinging Proxy...");
     
-    // CLEAN COORDINATES: Rounding to 4 decimal places
     const lat = center.lat.toFixed(4);
     const lon = center.lng.toFixed(4);
-    const url = `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/300`;
+    
+    // THE BYPASS: Routing through a proxy to strip the GitHub 'Referer' header
+    const targetUrl = `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/300`;
+    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
 
     try {
-        const res = await fetch(url);
-        if (!res.ok) {
-            // If we still get a 400, this will tell us exactly what was sent
-            throw new Error(`HTTP ${res.status} (Sent: ${lat}, ${lon})`);
-        }
+        const res = await fetch(proxyUrl, {
+            method: "GET",
+            headers: {
+                "Accept": "application/json"
+            }
+        });
+
+        if (!res.ok) throw new Error(`Proxy Error: ${res.status}`);
         
         const data = await res.json();
         const aircraft = data.ac || [];
@@ -167,21 +171,15 @@ async function scrapeRadar() {
             L.polyline(history[ac.hex].map(h => h.p), { color: color, weight: 1.5, opacity: 0.6 }).addTo(flightLayers);
             const marker = L.marker([ac.lat, ac.lon], { icon: getIcon(isHeli, color, ac.track || 0) }).addTo(flightLayers);
 
-            marker.bindPopup(`
-                <div class="popup-intel">
-                    <b>ID:</b> ${ac.flight || 'NOSIGN'}<br>
-                    <b>TYPE:</b> ${ac.t || 'UNK'}<br>
-                    <b>MISSION:</b> ${mission}
-                </div>
-            `);
+            marker.bindPopup(`<b>${ac.flight || 'NOSIGN'}</b><br>${ac.t || 'UNK'}<br>${mission}`);
         }
-        hudLog(`Tracking ${aircraft.length} targets.`);
+        hudLog(`Success: ${aircraft.length} targets.`);
     } catch (e) {
-        hudLog(`<span style="color:orange; font-weight:bold;">API ERR: ${e.message}</span>`);
+        // If this STILL fails, it means the Proxy itself is being blocked by your mobile carrier/network
+        hudLog(`<span style="color:red; font-weight:bold;">BYPASS FAILED: ${e.message}</span>`);
     }
 }
 
-}
 
 // Start sequence
 setTimeout(scrapeRadar, 1500); // Wait 1.5s for map to settle before first ping
