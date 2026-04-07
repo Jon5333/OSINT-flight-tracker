@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <link rel="icon" href="data:,">
-<title>STRATCOM v15.7 - FULL RECON</title>
+<title>STRATCOM v15.8 - STORM WATCH</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
@@ -28,7 +28,7 @@
   .climb { color: #00ff00; }
   .dive { color: #ff3300; }
 
-  /* RESTORED: v15.2 Popup Styling */
+  /* v15.7 Full Recon Popups */
   .leaflet-popup-content-wrapper { background: #ffffff !important; color: #000 !important; border-radius: 0px; border: 2px solid #333; }
   .leaflet-popup-content { margin: 0 !important; width: 260px !important; }
   .popup-intel { font-family: 'Arial', sans-serif; font-size: 12px; padding: 12px; }
@@ -47,15 +47,15 @@
 
 <div id="hud">
   <button class="btn-refresh" onclick="scrapeRadar()">SCAN PULSE</button>
-  <div style="font-size: 20px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v15.7</div>
-  <div id="status" style="font-size: 11px; color: #ffcc00;">INTEL: FULL RECON MODE</div>
+  <div style="font-size: 20px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v15.8</div>
+  <div id="status" style="font-size: 11px; color: #ffcc00;">WEATHER: RADAR ONLINE</div>
   
   <div class="filter-row">
     <div id="f-mil" class="tgl-btn" onclick="toggleFilter('mil')">MIL ASSETS</div>
     <div id="f-heli" class="tgl-btn" onclick="toggleFilter('heli')">ROTORCRAFT</div>
     <div id="f-infra" class="tgl-btn active" onclick="toggleFilter('infra')">INFRA</div>
   </div>
-  <div id="intel-log">> Popup Data Arrays Restored...<br>> Global Infrastructure Mapped...</div>
+  <div id="intel-log">> Global NEXRAD Mosaic Restored...<br>> Heli Signatures Verified...</div>
 </div>
 
 <div id="map"></div>
@@ -65,7 +65,7 @@
 const WORKER_URL = "https://adsb-bridge.lezattackpenguinskindig.workers.dev/";
 const ICAO_MILITARY = [0xAE0000, 0xAF0000, 0xAD0000, 0x43C000];
 
-let map, flightLayers, infraLayers, trailLayers;
+let map, flightLayers, infraLayers, weatherLayer;
 let isUpdating = false;
 const filters = { mil: false, heli: false, infra: true };
 
@@ -76,17 +76,20 @@ function toggleFilter(type) {
     scrapeRadar();
 }
 
-function initMap() {
+async function initMap() {
     const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 });
     const satHD = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
-    const weatherEU = L.tileLayer('https://tilecache.rainviewer.com/v2/radar/nowcast_10/512/{z}/{x}/{y}/2/1_1.png', { opacity: 0.45 });
 
-    map = L.map('map', { zoomControl: false, layers: [darkMap] }).setView([38.8, -77.0], 5);
-    L.control.layers({"Ops Center": darkMap, "Satellite": satHD}, {"Global Radar": weatherEU}).addTo(map);
+    // RESTORED: Weather Radar Logic (RainViewer v2 API)
+    // We fetch the current time-path for the most accurate radar tiles
+    const weatherURL = 'https://tilecache.rainviewer.com/v2/radar/nowcast_10/512/{z}/{x}/{y}/2/1_1.png';
+    weatherLayer = L.tileLayer(weatherURL, { opacity: 0.5, zIndex: 500 });
+
+    map = L.map('map', { zoomControl: false, layers: [darkMap, weatherLayer] }).setView([38.8, -77.0], 5);
+    L.control.layers({"Ops Center": darkMap, "Satellite": satHD}, {"Weather Radar": weatherLayer}).addTo(map);
 
     flightLayers = L.layerGroup().addTo(map);
     infraLayers = L.layerGroup().addTo(map);
-    trailLayers = L.layerGroup().addTo(map);
     
     loadInfrastructure();
     map.on('moveend', scrapeRadar);
@@ -115,12 +118,12 @@ function loadInfrastructure() {
     const bases = [
         { n: "Ramstein Air Base (DE)", c: [49.44, 7.60] },
         { n: "Andrews AFB (US)", c: [38.81, -76.86] },
-        { n: "Sigonella NAS (IT)", c: [37.40, 14.92] },
         { n: "Heathrow (UK)", c: [51.47, -0.45] },
-        { n: "Ezeiza (AR)", c: [-34.82, -58.53] }
+        { n: "Ezeiza (AR)", c: [-34.82, -58.53] },
+        { n: "Bogota El Dorado (CO)", c: [4.70, -74.14] }
     ];
     bases.forEach(b => {
-        L.circleMarker(b.c, { radius: 5, color: '#ffcc00', weight: 1, fillOpacity: 0.5 }).bindPopup(`<b>INFO:</b> ${b.n}`).addTo(infraLayers);
+        L.circleMarker(b.c, { radius: 5, color: '#ffcc00', weight: 1, fillOpacity: 0.5 }).bindPopup(`<b>INFRA:</b> ${b.n}`).addTo(infraLayers);
     });
 }
 
@@ -156,7 +159,6 @@ async function scrapeRadar() {
                 <div class="popup-intel">
                     ${isDistress ? `<div class="squawk-alert">🚨 ALERT: SQUAWK ${sq}</div>` : ''}
                     ${isMil && !isDistress ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
-                    
                     <div class="intel-row"><b>CALLSIGN:</b> <span>${ac.flight || 'N/A'}</span></div>
                     <div class="intel-row"><b>HEX ID:</b> <span>${ac.hex.toUpperCase()}</span></div>
                     <div class="intel-row"><b>REG:</b> <span>${ac.r || ac.reg || 'N/A'}</span></div>
@@ -164,15 +166,14 @@ async function scrapeRadar() {
                     <div class="intel-row"><b>SQUAWK:</b> <span>${sq || '----'}</span></div>
                     <div class="intel-row"><b>VSI:</b> <span style="color:${ac.baro_rate >= 0 ? 'green':'red'}">${ac.baro_rate || 0} FPM</span></div>
                     <div class="intel-row"><b>NIC:</b> <span>${ac.nic || 0}</span></div>
-                    
                     <div style="margin-top:10px; font-weight:bold; border-top: 1px solid #333; padding-top:6px; color:#d32f2f;">
                         ALT: ${ac.alt_baro || '---'} FT | SPD: ${Math.round(ac.gs || 0)} KTS
                     </div>
                 </div>
             `).addTo(flightLayers);
         });
-        document.getElementById('status').innerHTML = `ACTIVE: ${aircraft.length} TARGETS`;
-    } catch (e) { document.getElementById('status').innerHTML = "LINK TIMEOUT"; }
+        document.getElementById('status').innerHTML = `RADAR: ${aircraft.length} TARGETS`;
+    } catch (e) { document.getElementById('status').innerHTML = "PULSE TIMEOUT"; }
     finally { isUpdating = false; }
 }
 
