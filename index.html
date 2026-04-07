@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>STRATCOM v14.5 - Ghost Recon</title>
+<title>STRATCOM v15.2 - Full Intel</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
@@ -11,23 +11,39 @@
   #map { width:100%; height:100%; background: #000; }
   
   #hud { 
-    position: absolute; top: 10px; left: 10px; right: 10px; max-width: 400px;
+    position: absolute; top: 10px; left: 10px; right: 10px; max-width: 420px;
     background: rgba(5, 10, 15, 0.9); border: 1px solid #00ffcc; 
     padding: 12px; z-index: 1000; pointer-events: none;
   }
-  #intel-log { height: 100px; overflow-y: auto; font-size: 11px; border-top: 1px solid #1a3a3a; margin-top: 8px; padding-top: 5px; color: #00ccaa; pointer-events: auto; }
+  #intel-log { height: 80px; overflow-y: auto; font-size: 11px; border-top: 1px solid #1a3a3a; margin-top: 8px; padding-top: 5px; color: #00ccaa; pointer-events: auto; }
+  
+  .filter-row { display: flex; gap: 5px; margin-top: 10px; pointer-events: auto; }
+  .tgl-btn { 
+    flex: 1; background: rgba(0, 255, 204, 0.1); border: 1px solid #00ffcc; color: #00ffcc;
+    font-family: 'Share Tech Mono'; font-size: 10px; padding: 4px; cursor: pointer; text-align: center;
+    transition: 0.2s;
+  }
+  .tgl-btn.active { background: #00ffcc; color: #000; font-weight: bold; box-shadow: 0 0 10px #00ffcc; }
+
   .btn-refresh { pointer-events: auto; background: #00ffcc; color: #000; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; float: right; font-size: 10px; }
 
-  /* Tactical Popups */
+  /* Expanded Tactical Popups */
   .leaflet-popup-content-wrapper { background: #ffffff !important; color: #000 !important; border-radius: 0px; border: 2px solid #333; }
-  .leaflet-popup-content { margin: 0 !important; width: 240px !important; }
-  .popup-intel { font-family: 'Arial', sans-serif; font-size: 12px; padding: 10px; }
+  .leaflet-popup-content { margin: 0 !important; width: 260px !important; }
+  .popup-intel { font-family: 'Arial', sans-serif; font-size: 12px; padding: 12px; }
   .mil-banner { background: #d32f2f; color: #fff; padding: 6px; font-weight: bold; text-align: center; font-size: 10px; margin-bottom: 8px; }
   .nic-warn { background: #bf00ff; color: #fff; padding: 4px; font-size: 10px; text-align: center; margin-bottom: 5px; font-weight: bold; }
-  .intel-row { border-bottom: 1px solid #eee; padding: 3px 0; display: flex; justify-content: space-between; }
-  .ac-icon { display: flex; justify-content: center; align-items: center; }
+  .squawk-alert { background: #ff0000; color: #fff; padding: 6px; font-weight: bold; text-align: center; margin-bottom: 8px; animation: flashWarning 1s infinite; }
+  
+  .intel-row { border-bottom: 1px solid #eee; padding: 4px 0; display: flex; justify-content: space-between; font-family: 'Share Tech Mono', monospace; font-size: 11px; }
+  .intel-row b { color: #555; font-size: 10px; }
+  .intel-row span { color: #000; font-weight: bold; }
+  
+  @keyframes flashWarning { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  @keyframes beaconPulse { 0% { transform: scale(1); } 50% { filter: drop-shadow(0 0 10px red); transform: scale(1.2); } 100% { transform: scale(1); } }
+  .icon-distress svg { animation: beaconPulse 0.8s infinite; }
 
-  /* Custom Layer Control Styling */
+  .ac-icon { display: flex; justify-content: center; align-items: center; }
   .leaflet-control-layers { background: rgba(5, 10, 15, 0.9) !important; color: #00ffcc !important; border: 1px solid #00ffcc !important; font-family: 'Share Tech Mono' !important; }
 </style>
 </head>
@@ -35,9 +51,16 @@
 
 <div id="hud">
   <button class="btn-refresh" onclick="scrapeRadar()">SCAN PULSE</button>
-  <div style="font-size: 20px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v14.5</div>
-  <div id="status" style="font-size: 11px; color: #ffcc00;">UPLINK: DARK OPS BASE</div>
-  <div id="intel-log">> Multi-Layer Sync Active...<br>> NIC Interference Check Live...</div>
+  <div style="font-size: 20px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v15.2</div>
+  <div id="status" style="font-size: 11px; color: #ffcc00;">DATA LINK: FULL PACKET</div>
+  
+  <div class="filter-row">
+    <div id="f-mil" class="tgl-btn" onclick="toggleFilter('mil')">MIL ONLY</div>
+    <div id="f-heli" class="tgl-btn" onclick="toggleFilter('heli')">HELI ONLY</div>
+    <div id="f-nic" class="tgl-btn" onclick="toggleFilter('nic')">LOW NIC</div>
+  </div>
+
+  <div id="intel-log">> All Data Channels Restored...<br>> NIC Monitoring Active...</div>
 </div>
 
 <div id="map"></div>
@@ -50,42 +73,25 @@ const ICAO_MILITARY = [0xAE0000, 0xAF0000, 0xAD0000, 0x43C000];
 let map, flightLayers, noFlyLayers, trailLayers;
 let isUpdating = false;
 let history = {}; 
+let lastPanTime = 0;
+const filters = { mil: false, heli: false, nic: false };
+
+function toggleFilter(type) {
+    filters[type] = !filters[type];
+    document.getElementById(`f-${type}`).classList.toggle('active');
+    hudLog(`Filter: ${type.toUpperCase()} ${filters[type] ? 'ACTIVE' : 'OFF'}`);
+    scrapeRadar();
+}
 
 function initMap() {
-    // 1. Dark Ops Base Layer
-    const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        maxZoom: 19
-    });
-
-    // 2. HD Satellite Terrain (Esri World Imagery - Highly Reliable)
-    const satHD = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 19,
-        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics'
-    });
-
-    // 3. Live NEXRAD Weather Radar
+    const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 });
+    const satHD = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
     const weatherMap = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
         layers: 'nexrad-n0r-900913', format: 'image/png', transparent: true, opacity: 0.5
     });
 
-    // Initialize Map
-    map = L.map('map', { 
-        zoomControl: false, 
-        preferCanvas: true,
-        layers: [darkMap] // Default View is Dark Ops
-    }).setView([38.89, -77.03], 7);
-
-    // Toggle Control
-    const baseMaps = {
-        "Dark Ops Mode": darkMap,
-        "HD Satellite Terrain": satHD
-    };
-
-    const overlayMaps = {
-        "NEXRAD Weather": weatherMap
-    };
-
-    L.control.layers(baseMaps, overlayMaps).addTo(map);
+    map = L.map('map', { zoomControl: false, preferCanvas: true, layers: [darkMap] }).setView([38.89, -77.03], 7);
+    L.control.layers({"Dark Ops": darkMap, "HD Satellite": satHD}, {"NEXRAD Radar": weatherMap}).addTo(map);
 
     flightLayers = L.layerGroup().addTo(map);
     noFlyLayers = L.layerGroup().addTo(map);
@@ -100,7 +106,6 @@ const hudLog = (msg) => {
     if(log) log.innerHTML = `> ${msg}<br>` + log.innerHTML.slice(0, 300);
 };
 
-// --- TFR BOT ---
 async function runBotSwarm() {
     const faaTfrUrl = "https://services6.arcgis.com/ssUqYtj9l9mC24RE/arcgis/rest/services/Temporary_Flight_Restrictions/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson";
     const bridgeUrl = `${WORKER_URL}?url=${encodeURIComponent(faaTfrUrl)}&cb=${Date.now()}`;
@@ -109,27 +114,20 @@ async function runBotSwarm() {
         const geojson = await res.json();
         if(geojson.features) {
             noFlyLayers.clearLayers();
-            L.geoJSON(geojson, { 
-                style: { color: '#ff3300', weight: 2, fillOpacity: 0.1, dashArray: '8, 4' }
-            }).addTo(noFlyLayers);
-            hudLog(`FAA: ${geojson.features.length} Restricted Zones Active.`);
+            L.geoJSON(geojson, { style: { color: '#ff3300', weight: 2, fillOpacity: 0.1, dashArray: '8, 4' } }).addTo(noFlyLayers);
         }
-    } catch (e) { hudLog("FAA: Data Stalled."); }
+    } catch (e) { }
 }
 
-// --- ICON ENGINE (Heli & Plane Profiles) ---
-const getIcon = (color, track, isHeli) => {
+const getIcon = (color, track, isHeli, isDistress) => {
     const rot = track || 0;
-    // Top-down Helicopter SVG
     const heliPath = "M12 2l1 1h8v2h-8l-1 1h3v2h-2v4h2v2h-2v5h-2v-5h-2v-2h2v-4h-2v-2h3l-1-1h-8v-2h8l1-1z";
-    // Plane SVG
     const planePath = "M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z";
-    
-    const svg = `<svg viewBox="0 0 24 24" width="26" height="26" style="transform: rotate(${rot}deg); filter: drop-shadow(0 0 2px rgba(0,0,0,0.5));"><path fill="${color}" d="${isHeli ? heliPath : planePath}"/></svg>`;
-    return L.divIcon({ html: svg, className: 'ac-icon', iconSize: [26, 26] });
+    const dClass = isDistress ? 'icon-distress' : '';
+    const svg = `<svg viewBox="0 0 24 24" width="26" height="26" style="transform: rotate(${rot}deg); filter: drop-shadow(0 0 2px black);"><path fill="${color}" d="${isHeli ? heliPath : planePath}"/></svg>`;
+    return L.divIcon({ html: svg, className: `ac-icon ${dClass}`, iconSize: [26, 26] });
 };
 
-// --- RADAR ENGINE ---
 async function scrapeRadar() {
     if(!map || isUpdating) return;
     isUpdating = true;
@@ -155,37 +153,52 @@ async function scrapeRadar() {
             const isHeli = (ac.t && (ac.t.includes('EC') || ac.t.includes('B0') || ac.t.includes('H6') || ac.t.includes('SK76') || ac.t.includes('MD5'))) || (ac.category === 'A7');
             const hexVal = parseInt(ac.hex, 16);
             const isMil = ac.mil === 1 || ICAO_MILITARY.some(m => (hexVal & 0xFF0000) === m);
-            
-            let color = '#00ffcc'; // Default Teal
-            if (isHeli) color = '#ffcc00'; // Yellow Heli
-            if (isMil) color = '#ff0000'; // Red Military
-            if (isLowNic) color = '#bf00ff'; // Purple NIC Warning
+            const sq = ac.squawk || '';
+            const isDistress = (sq === '7700' || sq === '7600' || sq === '7500');
 
-            // Tactical Trails (5 steps)
+            if (!isDistress) {
+                if (filters.mil && !isMil) return;
+                if (filters.heli && !isHeli) return;
+                if (filters.nic && !isLowNic) return;
+            }
+
+            let color = isMil ? '#ff0000' : (isHeli ? '#ffcc00' : '#00ffcc');
+            if (isLowNic) color = '#bf00ff';
+            if (isDistress) color = '#ff0000';
+
             if (!history[ac.hex]) history[ac.hex] = [];
             history[ac.hex].push([ac.lat, ac.lon]);
             if (history[ac.hex].length > 5) history[ac.hex].shift();
             L.polyline(history[ac.hex], { color: color, weight: 1.5, opacity: 0.4, dashArray: '2, 4' }).addTo(trailLayers);
 
-            L.marker([ac.lat, ac.lon], { icon: getIcon(color, ac.track, isHeli) })
+            L.marker([ac.lat, ac.lon], { icon: getIcon(color, ac.track, isHeli, isDistress) })
             .bindPopup(`
                 <div class="popup-intel">
-                    ${isMil ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
-                    ${isLowNic ? `<div class="nic-warn">SIGNAL WARNING: NIC ${nic}</div>` : ''}
-                    <div class="intel-row"><b>ID:</b> <span>${ac.flight || 'N/A'}</span></div>
-                    <div class="intel-row"><b>HEX:</b> <span>${ac.hex.toUpperCase()}</span></div>
-                    <div class="intel-row"><b>TYPE:</b> <span>${ac.t || 'Unknown'}</span></div>
-                    <div class="intel-row"><b>MODEL:</b> <span>${ac.desc || 'Classified'}</span></div>
+                    ${isDistress ? `<div class="squawk-alert">🚨 EMERGENCY SQUAWK: ${sq}</div>` : ''}
+                    ${isMil && !isDistress ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
+                    ${isLowNic && !isDistress ? `<div class="nic-warn">SIGNAL WARNING: NIC ${nic}</div>` : ''}
+                    
+                    <div class="intel-row"><b>CALLSIGN:</b> <span>${ac.flight || 'N/A'}</span></div>
+                    <div class="intel-row"><b>HEX ID:</b> <span>${ac.hex ? ac.hex.toUpperCase() : 'N/A'}</span></div>
+                    <div class="intel-row"><b>REG:</b> <span>${ac.r || ac.reg || 'N/A'}</span></div>
+                    <div class="intel-row"><b>TYPE CODE:</b> <span>${ac.t || 'N/A'}</span></div>
+                    <div class="intel-row"><b>MODEL:</b> <span>${ac.desc || 'N/A'}</span></div>
+                    <div class="intel-row"><b>SQUAWK:</b> <span>${sq || 'N/A'}</span></div>
                     <div class="intel-row"><b>NIC:</b> <span>${nic}</span></div>
-                    <div style="margin-top:8px; font-weight:bold; border-top: 1px solid #ddd; padding-top:5px;">
-                        ALT: ${ac.alt_baro || '---'} ft | SPD: ${Math.round(ac.gs || 0)} kts
+                    
+                    <div style="margin-top:10px; font-weight:bold; border-top: 1px solid #333; padding-top:6px; color:#d32f2f;">
+                        ALT: ${ac.alt_baro || '---'} FT | SPD: ${Math.round(ac.gs || 0)} KTS
                     </div>
                 </div>
             `)
             .addTo(flightLayers);
+
+            if (sq === '7700' && Date.now() - lastPanTime > 60000) {
+                map.panTo([ac.lat, ac.lon]);
+                lastPanTime = Date.now();
+            }
         });
         
-        hudLog(`Pulse: ${aircraft.length} Targets Detected.`);
         document.getElementById('status').innerHTML = "UPLINK: SECURE";
     } catch (e) { document.getElementById('status').innerHTML = "UPLINK: TIMEOUT"; }
     finally { isUpdating = false; }
