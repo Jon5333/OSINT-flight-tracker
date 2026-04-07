@@ -129,20 +129,51 @@ const hudLog = (msg) => {
 
 // TFR / No-Fly Zone Logic
 async function runBotSwarm() {
-    const faaTfrUrl = "https://services6.arcgis.com/ssUqYtj9l9mC24RE/arcgis/rest/services/Temporary_Flight_Restrictions/FeatureServer/0/query?where=1%3D1&f=geojson";
-    const bridgeUrl = `${WORKER_URL}?url=${encodeURIComponent(faaTfrUrl)}`;
+    // 1. We strip 'outFields' entirely to reduce the JSON payload size by ~80%
+    // 2. We add a cache-buster (?cb=) to ensure we aren't getting a stuck proxy response
+    const faaTfrUrl = "https://services6.arcgis.com/ssUqYtj9l9mC24RE/arcgis/rest/services/Temporary_Flight_Restrictions/FeatureServer/0/query?where=1%3D1&f=geojson&geometryPrecision=3";
     
+    const bridgeUrl = `${WORKER_URL}?url=${encodeURIComponent(faaTfrUrl)}&cb=${Date.now()}`;
+    
+    // Create a dedicated timeout for the TFR fetch (8 seconds)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
     try {
-        const res = await fetch(bridgeUrl);
+        const res = await fetch(bridgeUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
         const geojson = await res.json();
-        if(geojson.features) {
+        
+        if (geojson && geojson.features) {
             noFlyLayers.clearLayers();
             L.geoJSON(geojson, { 
-                style: { color: '#ff3300', weight: 2, fillOpacity: 0.1, dashArray: '8, 4' } 
+                style: { 
+                    color: '#ff3300', 
+                    weight: 1.5, 
+                    fillOpacity: 0.1, 
+                    dashArray: '4, 8' 
+                },
+                // Add a simple tooltip so you can see why the zone exists
+                onEachFeature: (feature, layer) => {
+                    if (feature.properties && feature.properties.NAME) {
+                        layer.bindTooltip(`TFR: ${feature.properties.NAME}`, { sticky: true });
+                    }
+                }
             }).addTo(noFlyLayers);
-            hudLog(`TFR: Sync Complete (${geojson.features.length} zones)`);
+            
+            hudLog(`TFR: ${geojson.features.length} ZONES SYNCED`);
         }
-    } catch (e) { hudLog("TFR: Link Timeout"); }
+    } catch (e) { 
+        if (e.name === 'AbortError') {
+            hudLog("TFR: UPLINK TIMEOUT (SERVER SLOW)");
+        } else {
+            hudLog(`TFR: LINK OFFLINE`);
+        }
+        console.warn("TFR Fetch Issue:", e.message);
+    }
 }
 
 // Icon Factory
