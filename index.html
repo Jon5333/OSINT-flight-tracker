@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <link rel="icon" href="data:,">
-<title>STRATCOM v15.5 - FULL INTEL</title>
+<title>STRATCOM v15.7 - FULL RECON</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
@@ -12,23 +12,23 @@
   #map { width:100%; height:100%; background: #000; }
   
   #hud { 
-    position: absolute; top: 10px; left: 10px; right: 10px; max-width: 420px;
+    position: absolute; top: 10px; left: 10px; right: 10px; max-width: 440px;
     background: rgba(5, 10, 15, 0.95); border: 1px solid #00ffcc; 
     padding: 12px; z-index: 1000; pointer-events: none;
   }
   #intel-log { height: 75px; overflow-y: auto; font-size: 11px; border-top: 1px solid #1a3a3a; margin-top: 8px; padding-top: 5px; color: #00ccaa; pointer-events: auto; }
   
   .filter-row { display: flex; gap: 5px; margin-top: 10px; pointer-events: auto; }
-  .tgl-btn { flex: 1; background: rgba(0, 255, 204, 0.1); border: 1px solid #00ffcc; color: #00ffcc; font-family: 'Share Tech Mono'; font-size: 10px; padding: 6px; cursor: pointer; text-align: center; transition: 0.2s; }
+  .tgl-btn { flex: 1; background: rgba(0, 255, 204, 0.1); border: 1px solid #00ffcc; color: #00ffcc; font-family: 'Share Tech Mono'; font-size: 10px; padding: 6px; cursor: pointer; text-align: center; }
   .tgl-btn.active { background: #00ffcc; color: #000; font-weight: bold; box-shadow: 0 0 10px #00ffcc; }
   .btn-refresh { pointer-events: auto; background: #00ffcc; color: #000; border: none; padding: 5px 10px; font-weight: bold; cursor: pointer; float: right; font-size: 10px; }
 
-  /* VSI Arrow Styling */
+  /* VSI Styling */
   .vsi-arrow { font-size: 14px; font-weight: bold; margin-left: 18px; text-shadow: 0 0 3px black; }
   .climb { color: #00ff00; }
   .dive { color: #ff3300; }
 
-  /* Tactical Popups */
+  /* RESTORED: v15.2 Popup Styling */
   .leaflet-popup-content-wrapper { background: #ffffff !important; color: #000 !important; border-radius: 0px; border: 2px solid #333; }
   .leaflet-popup-content { margin: 0 !important; width: 260px !important; }
   .popup-intel { font-family: 'Arial', sans-serif; font-size: 12px; padding: 12px; }
@@ -40,8 +40,6 @@
   .intel-row span { color: #000; font-weight: bold; }
   
   @keyframes flashWarning { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-  @keyframes beaconPulse { 0% { transform: scale(1); } 50% { filter: drop-shadow(0 0 10px red); transform: scale(1.2); } 100% { transform: scale(1); } }
-  .icon-distress svg { animation: beaconPulse 0.8s infinite; }
   .ac-icon { display: flex; justify-content: center; align-items: center; }
 </style>
 </head>
@@ -49,15 +47,15 @@
 
 <div id="hud">
   <button class="btn-refresh" onclick="scrapeRadar()">SCAN PULSE</button>
-  <div style="font-size: 20px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v15.5</div>
-  <div id="status" style="font-size: 11px; color: #ffcc00;">UPLINK: FULL DATASTREAM</div>
+  <div style="font-size: 20px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v15.7</div>
+  <div id="status" style="font-size: 11px; color: #ffcc00;">INTEL: FULL RECON MODE</div>
   
   <div class="filter-row">
-    <div id="f-mil" class="tgl-btn" onclick="toggleFilter('mil')">MIL ONLY</div>
-    <div id="f-heli" class="tgl-btn" onclick="toggleFilter('heli')">HELI ONLY</div>
-    <div id="f-nic" class="tgl-btn" onclick="toggleFilter('nic')">LOW NIC</div>
+    <div id="f-mil" class="tgl-btn" onclick="toggleFilter('mil')">MIL ASSETS</div>
+    <div id="f-heli" class="tgl-btn" onclick="toggleFilter('heli')">ROTORCRAFT</div>
+    <div id="f-infra" class="tgl-btn active" onclick="toggleFilter('infra')">INFRA</div>
   </div>
-  <div id="intel-log">> All Data Channels Restored...<br>> Vector Projection (5m) Active...</div>
+  <div id="intel-log">> Popup Data Arrays Restored...<br>> Global Infrastructure Mapped...</div>
 </div>
 
 <div id="map"></div>
@@ -67,29 +65,30 @@
 const WORKER_URL = "https://adsb-bridge.lezattackpenguinskindig.workers.dev/";
 const ICAO_MILITARY = [0xAE0000, 0xAF0000, 0xAD0000, 0x43C000];
 
-let map, flightLayers, trailLayers, vectorLayers;
+let map, flightLayers, infraLayers, trailLayers;
 let isUpdating = false;
-let history = {}; 
-let lastPanTime = 0;
-const filters = { mil: false, heli: false, nic: false };
+const filters = { mil: false, heli: false, infra: true };
 
 function toggleFilter(type) {
     filters[type] = !filters[type];
     document.getElementById(`f-${type}`).classList.toggle('active');
+    if(type === 'infra') filters[type] ? infraLayers.addTo(map) : map.removeLayer(infraLayers);
     scrapeRadar();
 }
 
 function initMap() {
     const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 });
     const satHD = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
-    
-    map = L.map('map', { zoomControl: false, preferCanvas: true, layers: [darkMap] }).setView([38.89, -77.03], 7);
-    L.control.layers({"Dark Ops": darkMap, "HD Satellite": satHD}).addTo(map);
+    const weatherEU = L.tileLayer('https://tilecache.rainviewer.com/v2/radar/nowcast_10/512/{z}/{x}/{y}/2/1_1.png', { opacity: 0.45 });
+
+    map = L.map('map', { zoomControl: false, layers: [darkMap] }).setView([38.8, -77.0], 5);
+    L.control.layers({"Ops Center": darkMap, "Satellite": satHD}, {"Global Radar": weatherEU}).addTo(map);
 
     flightLayers = L.layerGroup().addTo(map);
+    infraLayers = L.layerGroup().addTo(map);
     trailLayers = L.layerGroup().addTo(map);
-    vectorLayers = L.layerGroup().addTo(map);
     
+    loadInfrastructure();
     map.on('moveend', scrapeRadar);
     scrapeRadar();
     setInterval(scrapeRadar, 15000);
@@ -98,88 +97,73 @@ function initMap() {
 const getIcon = (color, track, isHeli, isDistress, baroRate) => {
     const rot = track || 0;
     const planePath = "M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z";
-    const dClass = isDistress ? 'icon-distress' : '';
-    
+    const heliPath = "M12 2L13 3H21V5H13L12 6H15V8H13V12H15V14H13V19H11V14H9V12H11V8H9V6H12L11 3H3V1H11L12 2Z";
+
     let vsiSymbol = "";
-    if (baroRate > 500) vsiSymbol = '<span class="vsi-arrow climb">▲</span>';
-    else if (baroRate < -500) vsiSymbol = '<span class="vsi-arrow dive">▼</span>';
+    if (baroRate > 700) vsiSymbol = '<span class="vsi-arrow climb">▲</span>';
+    else if (baroRate < -700) vsiSymbol = '<span class="vsi-arrow dive">▼</span>';
 
     const svg = `<div style="position:relative;">
-        <svg viewBox="0 0 24 24" width="26" height="26" style="transform: rotate(${rot}deg); filter: drop-shadow(0 0 2px black);"><path fill="${color}" d="${planePath}"/></svg>
-        <div style="position:absolute; top:-5px; left:15px;">${vsiSymbol}</div>
+        <svg viewBox="0 0 24 24" width="26" height="26" style="transform: rotate(${rot}deg); filter: drop-shadow(0 0 2px black);"><path fill="${color}" d="${isHeli ? heliPath : planePath}"/></svg>
+        <div style="position:absolute; top:-8px; left:12px;">${vsiSymbol}</div>
     </div>`;
     
-    return L.divIcon({ html: svg, className: `ac-icon ${dClass}`, iconSize: [26, 26] });
+    return L.divIcon({ html: svg, className: `ac-icon`, iconSize: [26, 26] });
 };
 
-function drawVector(lat, lon, track, speed, color) {
-    if (!track || !speed) return;
-    const distNm = (speed * (5 / 60));
-    const dLat = (distNm * Math.cos(track * Math.PI / 180)) / 60;
-    const dLon = (distNm * Math.sin(track * Math.PI / 180)) / (60 * Math.cos(lat * Math.PI / 180));
-    
-    L.polyline([[lat, lon], [lat + dLat, lon + dLon]], {
-        color: color, weight: 1, opacity: 0.4, dashArray: '4, 8'
-    }).addTo(vectorLayers);
+function loadInfrastructure() {
+    const bases = [
+        { n: "Ramstein Air Base (DE)", c: [49.44, 7.60] },
+        { n: "Andrews AFB (US)", c: [38.81, -76.86] },
+        { n: "Sigonella NAS (IT)", c: [37.40, 14.92] },
+        { n: "Heathrow (UK)", c: [51.47, -0.45] },
+        { n: "Ezeiza (AR)", c: [-34.82, -58.53] }
+    ];
+    bases.forEach(b => {
+        L.circleMarker(b.c, { radius: 5, color: '#ffcc00', weight: 1, fillOpacity: 0.5 }).bindPopup(`<b>INFO:</b> ${b.n}`).addTo(infraLayers);
+    });
 }
 
 async function scrapeRadar() {
     if(!map || isUpdating) return;
     isUpdating = true;
-    document.getElementById('status').innerHTML = "SCANNING PULSE...";
-
     const center = map.getCenter();
-    const bridgeUrl = `${WORKER_URL}?url=${encodeURIComponent(`https://api.adsb.lol/v2/lat/${center.lat.toFixed(3)}/lon/${center.lng.toFixed(3)}/dist/100`)}&p=${Date.now()}`;
+    const bridgeUrl = `${WORKER_URL}?url=${encodeURIComponent(`https://api.adsb.lol/v2/lat/${center.lat.toFixed(3)}/lon/${center.lng.toFixed(3)}/dist/250`)}&p=${Date.now()}`;
 
     try {
         const res = await fetch(bridgeUrl);
         const data = await res.json();
         const aircraft = data.ac || [];
-        
         flightLayers.clearLayers();
-        trailLayers.clearLayers();
-        vectorLayers.clearLayers();
 
         aircraft.forEach(ac => {
             if (!ac.lat || !ac.lon) return;
-
-            const hex = ac.hex ? ac.hex.toUpperCase() : 'N/A';
-            const nic = ac.nic || 0;
             const isMil = ac.mil === 1 || ICAO_MILITARY.some(m => (parseInt(ac.hex, 16) & 0xFF0000) === m);
-            const isHeli = (ac.t && (ac.t.includes('EC') || ac.t.includes('H6'))) || (ac.category === 'A7');
+            const isHeli = (ac.t && (ac.t.includes('H6') || ac.t.includes('EC'))) || ac.category === 'A7';
             const sq = ac.squawk || '';
             const isDistress = ['7700','7600','7500'].includes(sq);
-            const baroRate = ac.baro_rate || 0;
 
             if (!isDistress) {
                 if (filters.mil && !isMil) return;
                 if (filters.heli && !isHeli) return;
-                if (filters.nic && nic < 7) return;
             }
 
             let color = isMil ? '#ff0000' : (isHeli ? '#ffcc00' : '#00ffcc');
             if (isDistress) color = '#ff0000';
 
-            drawVector(ac.lat, ac.lon, ac.track, ac.gs, color);
-
-            if (!history[ac.hex]) history[ac.hex] = [];
-            history[ac.hex].push([ac.lat, ac.lon]);
-            if (history[ac.hex].length > 5) history[ac.hex].shift();
-            L.polyline(history[ac.hex], { color: color, weight: 1, opacity: 0.2 }).addTo(trailLayers);
-
-            L.marker([ac.lat, ac.lon], { icon: getIcon(color, ac.track, isHeli, isDistress, baroRate) })
+            L.marker([ac.lat, ac.lon], { icon: getIcon(color, ac.track, isHeli, isDistress, ac.baro_rate) })
             .bindPopup(`
                 <div class="popup-intel">
                     ${isDistress ? `<div class="squawk-alert">🚨 ALERT: SQUAWK ${sq}</div>` : ''}
                     ${isMil && !isDistress ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
                     
                     <div class="intel-row"><b>CALLSIGN:</b> <span>${ac.flight || 'N/A'}</span></div>
-                    <div class="intel-row"><b>HEX ID:</b> <span>${hex}</span></div>
+                    <div class="intel-row"><b>HEX ID:</b> <span>${ac.hex.toUpperCase()}</span></div>
                     <div class="intel-row"><b>REG:</b> <span>${ac.r || ac.reg || 'N/A'}</span></div>
                     <div class="intel-row"><b>TYPE/DESC:</b> <span>${ac.t || ''} ${ac.desc || ''}</span></div>
                     <div class="intel-row"><b>SQUAWK:</b> <span>${sq || '----'}</span></div>
-                    <div class="intel-row"><b>VSI:</b> <span style="color:${baroRate >= 0 ? 'green':'red'}">${baroRate} FPM</span></div>
-                    <div class="intel-row"><b>NIC:</b> <span>${nic}</span></div>
+                    <div class="intel-row"><b>VSI:</b> <span style="color:${ac.baro_rate >= 0 ? 'green':'red'}">${ac.baro_rate || 0} FPM</span></div>
+                    <div class="intel-row"><b>NIC:</b> <span>${ac.nic || 0}</span></div>
                     
                     <div style="margin-top:10px; font-weight:bold; border-top: 1px solid #333; padding-top:6px; color:#d32f2f;">
                         ALT: ${ac.alt_baro || '---'} FT | SPD: ${Math.round(ac.gs || 0)} KTS
@@ -187,8 +171,8 @@ async function scrapeRadar() {
                 </div>
             `).addTo(flightLayers);
         });
-        document.getElementById('status').innerHTML = "UPLINK: SECURE";
-    } catch (e) { document.getElementById('status').innerHTML = "UPLINK: TIMEOUT"; }
+        document.getElementById('status').innerHTML = `ACTIVE: ${aircraft.length} TARGETS`;
+    } catch (e) { document.getElementById('status').innerHTML = "LINK TIMEOUT"; }
     finally { isUpdating = false; }
 }
 
