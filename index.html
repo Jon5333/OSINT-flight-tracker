@@ -158,6 +158,130 @@ map.on('moveend', scrapeRadar);
 </script>
 </body>
 </html>
+  <button class="btn-refresh" onclick="scrapeRadar()">MANUAL REFRESH</button>
+  <div style="font-size: 22px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v14.0</div>
+  <div id="status" style="font-size: 11px; color: #ffcc00;">UPLINK: SYSTEM STANDBY</div>
+  <div id="intel-log">> Circuit Isolation Active...</div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+const WORKER_URL = "https://adsb-bridge.lezattackpenguinskindig.workers.dev/";
+const ICAO_MILITARY = [0xAE0000, 0xAF0000, 0xAD0000, 0x43C000];
+
+let map, flightLayers, noFlyLayers, ewLayers;
+let isUpdating = false;
+
+function initMap() {
+    map = L.map('map', { zoomControl: false, preferCanvas: true }).setView([38.89, -77.03], 7);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+    flightLayers = L.layerGroup().addTo(map);
+    noFlyLayers = L.layerGroup().addTo(map);
+    ewLayers = L.layerGroup().addTo(map);
+    hudLog("Uplink Established.");
+    runBotSwarm();
+    scrapeRadar();
+}
+
+const hudLog = (msg) => {
+    const log = document.getElementById('intel-log');
+    if(log) log.innerHTML = `> ${msg}<br>` + log.innerHTML.slice(0, 400);
+};
+
+// --- SILENT FAA BOT (Wont block main thread) ---
+async function runBotSwarm() {
+    const faaTfrUrl = "https://services6.arcgis.com/ssUqYtj9l9mC24RE/arcgis/rest/services/Temporary_Flight_Restrictions/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson";
+    const bridgeUrl = `${WORKER_URL}?url=${encodeURIComponent(faaTfrUrl)}&cb=${Date.now()}`;
+    try {
+        const res = await fetch(bridgeUrl, { signal: AbortSignal.timeout(5000) }); // Tight 5s timeout
+        const geojson = await res.json();
+        if(geojson.features) {
+            noFlyLayers.clearLayers();
+            L.geoJSON(geojson, { style: { color: '#ff3300', weight: 2, fillOpacity: 0.15 } }).addTo(noFlyLayers);
+            hudLog("FAA: Data Stream Verified.");
+        }
+    } catch (e) { 
+        // Silent fail - do nothing to avoid cluttering the thread
+    }
+}
+
+// --- DYNAMIC EW DETECTION ---
+function analyzeEW(aircraft) {
+    ewLayers.clearLayers();
+    const jammed = aircraft.filter(ac => ac && ac.nic < 5 && ac.lat && ac.lon);
+    if (jammed.length < 2) return;
+    jammed.forEach(ac => {
+        L.circle([ac.lat, ac.lon], { color: '#ffcc00', opacity: 0.4, fillOpacity: 0.05, radius: 25000, weight: 1 }).addTo(ewLayers);
+    });
+}
+
+// --- PRIMARY RADAR PULSE ---
+async function scrapeRadar() {
+    if(!map || isUpdating) return;
+    isUpdating = true;
+    
+    document.getElementById('status').innerHTML = "UPLINK: <span style='color:orange;'>SCANNING...</span>";
+    
+    const center = map.getCenter();
+    const apiTarget = `https://api.adsb.lol/v2/lat/${center.lat.toFixed(3)}/lon/${center.lng.toFixed(3)}/dist/100`;
+    const bridgeUrl = `${WORKER_URL}?url=${encodeURIComponent(apiTarget)}&pulse=${Date.now()}`;
+
+    try {
+        const res = await fetch(bridgeUrl, { signal: AbortSignal.timeout(8000) }); // 8s timeout
+        const data = await res.json();
+        const aircraft = data.ac || [];
+        
+        analyzeEW(aircraft);
+        flightLayers.clearLayers();
+        
+        aircraft.forEach(ac => {
+            if (!ac || !ac.lat || !ac.lon) return;
+            const hexVal = parseInt(ac.hex, 16);
+            const isMil = ac.mil === 1 || ICAO_MILITARY.some(m => (hexVal & 0xFF0000) === m);
+            const isJammed = ac.nic !== undefined && ac.nic < 6;
+            
+            const color = isMil ? '#ff0000' : '#00ffcc';
+            const rotation = ac.track || 0;
+            const fill = isJammed ? "#ff9800" : color;
+            const iconSvg = `<svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${rotation}deg);"><path fill="${fill}" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`;
+
+            L.marker([ac.lat, ac.lon], { icon: L.divIcon({ html: iconSvg, className: 'ac-icon', iconSize: [24, 24], iconAnchor: [12, 12] }) })
+            .bindPopup(`
+                <div class="popup-intel">
+                    ${isMil ? '<div class="mil-banner">⚠️ MILITARY ASSET DETECTED</div>' : ''}
+                    <div class="intel-row"><b>ID:</b> <span>${ac.flight || 'N/A'}</span></div>
+                    <div class="intel-row"><b>HEX:</b> <span>${ac.hex.toUpperCase()}</span></div>
+                    <div class="intel-row"><b>MODEL:</b> <span>${ac.t || 'Unknown'}</span></div>
+                    <div class="intel-row"><b>OWNER:</b> <span>${isMil ? 'Confidential' : (ac.ownOp || 'Private')}</span></div>
+                    <div style="margin-top:8px;">
+                        <b>ALT:</b> ${ac.alt_baro || '---'} ft | <b>SPD:</b> ${Math.round(ac.gs || 0)} kts
+                    </div>
+                    <span class="mission-tag">${isMil ? 'MISSION: CLASSIFIED' : 'STATUS: EN-ROUTE'}</span>
+                </div>
+            `)
+            .addTo(flightLayers);
+        });
+        
+        hudLog(`Pulse: ${aircraft.length} targets detected.`);
+        document.getElementById('status').innerHTML = "UPLINK: <span style='color:#00ffcc;'>ACTIVE</span>";
+    } catch (e) { 
+        document.getElementById('status').innerHTML = "UPLINK: <span style='color:red;'>TIMEOUT</span>";
+        hudLog("ERR: Link stalled. Auto-retrying...");
+    } finally {
+        isUpdating = false;
+    }
+}
+
+// Initialization Sequence
+setTimeout(initMap, 800); 
+setInterval(scrapeRadar, 15000); // 15-second loop
+setInterval(runBotSwarm, 120000); // Only check FAA every 2 mins to save bandwidth
+map.on('moveend', scrapeRadar);
+</script>
+</body>
+</html>
 </head>
 <body>
 
