@@ -52,7 +52,7 @@
 <body>
 
 <div id="hud">
-  <div style="font-size: 18px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v17.0</div>
+  <div style="font-size: 18px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v17.1</div>
   <div id="hud-intel" style="font-size: 11px; color: #00ffcc; letter-spacing: 1px;">INTEL: INITIALIZING RADAR MATRIX...</div>
   
   <div class="filter-row">
@@ -74,7 +74,6 @@ let map, flightLayers, infraLayers, nexradLayer;
 let isUpdating = false;
 const filters = { mil: false, heli: false, infra: true };
 
-// Format Aircraft Types from ICAO codes + DB Description Fallback
 function formatAircraftType(typeCode, desc) {
     const types = {
         'B738': 'Boeing 737-800', 'B737': 'Boeing 737', 'B739': 'Boeing 737-900',
@@ -97,14 +96,12 @@ function formatCategory(cat) {
     return cats[cat] || cat;
 }
 
-// Decode Military Branch via DB Registry, Callsign, Hex, or Airframe Inference
 function getMilitaryBranch(ac) {
     const cs = (ac.flight || '').trim().toUpperCase();
     const hx = (ac.hex || '').toUpperCase();
     const op = (ac.ownOp || '').toUpperCase();
     const type = (ac.t || '').toUpperCase();
 
-    // 1. Check ADS-B Live Registry (Owner/Operator Database)
     if (op.includes('AIR FORCE') || op.includes('USAF')) return 'US AIR FORCE';
     if (op.includes('NAVY') || op.includes('USN')) return 'US NAVY';
     if (op.includes('MARINE') || op.includes('USMC')) return 'US MARINE CORPS';
@@ -114,17 +111,13 @@ function getMilitaryBranch(ac) {
     if (op.includes('ROYAL AIR FORCE')) return 'ROYAL AIR FORCE (UK)';
     if (op.includes('CANADIAN ARMED FORCES')) return 'ROYAL CANADIAN AIR FORCE';
 
-    // 2. Civil-Registered DoD Contractors
     if (cs.startsWith('JANET')) return 'USAF CONTRACTOR (JANET)';
     if (cs.startsWith('OMEGA')) return 'DOD REFUELING CONTRACTOR (OMEGA)';
     if (cs.startsWith('ATAC') || cs.startsWith('DRAKEN') || cs.startsWith('DRK') || cs.startsWith('BDR') || cs.startsWith('META') || cs.startsWith('VADER')) return 'DOD ADVERSARY CONTRACTOR';
 
-    // 3. International Checks via Hex / Callsign
     if (hx.startsWith('43C') || cs.startsWith('RRR') || cs.startsWith('ASY') || cs.startsWith('VORTEX')) return 'ROYAL AIR FORCE (UK)';
     if (cs.startsWith('CFC') || cs.startsWith('CAN')) return 'ROYAL CANADIAN AIR FORCE';
     
-    // 4. US Tactical Callsign Matrix
-    // Added 'HIVE' here:
     const usafCallsigns = ['RCH', 'REACH', 'SPAR', 'AF', 'MOOSE', 'BONE', 'QID', 'HOBO', 'JESSE', 'HUSKY', 'KING', 'SHADOW', 'TIGER', 'VIPER', 'SNOOPY', 'GHOST', 'BAT', 'DEATH', 'THUG', 'SLAM', 'JEDI', 'HIVE'];
     
     if (usafCallsigns.some(prefix => cs.startsWith(prefix))) return 'US AIR FORCE';
@@ -134,7 +127,6 @@ function getMilitaryBranch(ac) {
     if (cs.startsWith('PAT') || cs.startsWith('GUARD') || cs.startsWith('ARMY') || cs.startsWith('DUSTOFF') || cs.startsWith('DUKE')) return 'US ARMY';
     if (cs.startsWith('CG') || cs.startsWith('COAST') || (cs.startsWith('C') && cs.length === 5 && !isNaN(cs.substring(1)))) return 'US COAST GUARD';
 
-    // 5. Hex + Airframe Inference
     if (hx.startsWith('AE')) {
         if (['C17', 'K35R', 'B52', 'B1', 'B2', 'A10', 'F16', 'F22', 'F35', 'C130', 'C5'].includes(type)) return 'US AIR FORCE (INFERRED)';
         if (['P8', 'E6'].includes(type)) return 'US NAVY (INFERRED)';
@@ -143,7 +135,6 @@ function getMilitaryBranch(ac) {
     
     return 'GOV / MILITARY ASSET (UNSPECIFIED)';
 }
-
 
 function toggleFilter(type) {
     filters[type] = !filters[type];
@@ -262,7 +253,6 @@ async function scrapeRadar() {
 
             const headingDisplay = (ac.track !== undefined && ac.track !== null) ? Math.round(ac.track).toString().padStart(3, '0') + '°' : '---';
 
-            // Pass the entire `ac` object to the branch detector to read the registry data
             const branchRow = isMil ? `<div class="intel-row"><b>Operator:</b> <span style="color: #d32f2f;">${getMilitaryBranch(ac)}</span></div>` : '';
 
             marker.bindPopup(`
