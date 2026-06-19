@@ -17,34 +17,49 @@
   }
   
   .filter-row { display: flex; gap: 5px; margin-top: 10px; flex-wrap: wrap; }
-  .tgl-btn { flex: 1; min-width: 90px; background: rgba(0, 255, 204, 0.1); border: 1px solid #00ffcc; color: #00ffcc; font-size: 10px; padding: 6px; cursor: pointer; text-align: center; }
+  .tgl-btn { flex: 1; min-width: 90px; background: rgba(0, 255, 204, 0.1); border: 1px solid #00ffcc; color: #00ffcc; font-size: 10px; padding: 6px; cursor: pointer; text-align: center; user-select: none; }
   .tgl-btn.active { background: #00ffcc; color: #000; font-weight: bold; }
   .refresh-btn { background: #ffcc00 !important; color: #000 !important; border: 1px solid #ffcc00 !important; font-weight: bold; }
 
-  .leaflet-popup-content-wrapper { background: #ffffff !important; color: #000 !important; border-radius: 0px; border: 2px solid #333; }
-  .leaflet-popup-content { margin: 0 !important; width: 300px !important; }
+  /* Leaflet Pop-up Overrides */
+  .leaflet-popup-content-wrapper { background: #ffffff !important; color: #000 !important; border-radius: 0px; border: 2px solid #333; padding: 0; overflow: hidden; }
+  .leaflet-popup-content { margin: 0 !important; width: 280px !important; }
+  .leaflet-popup-tip { background: #fff !important; }
   
-  .img-frame { background: #111; position: relative; width: 100%; height: 160px; border-bottom: 2px solid #333; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  .ac-photo { position: absolute; top:0; left:0; z-index: 2; width: 100%; height: 100%; object-fit: cover; }
-  .no-img-label { color: #00ffcc; font-size: 10px; z-index: 1; }
+  .img-frame { background: #111; position: relative; width: 100%; height: 150px; border-bottom: 2px solid #333; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  
+  .ac-photo { 
+    position: absolute; 
+    top: 0; 
+    left: 0; 
+    z-index: 2; 
+    width: 100%; 
+    height: 100%; 
+    object-fit: cover;
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+  }
+  
+  .no-img-label { color: #00ffcc; font-size: 10px; z-index: 1; letter-spacing: 1px; font-weight: bold; text-align: center; }
 
-  .intel-body { padding: 12px; }
-  .mil-banner { background: #d32f2f; color: #fff; padding: 4px; font-weight: bold; text-align: center; font-size: 10px; }
-  .intel-row { border-bottom: 1px solid #eee; padding: 4px 0; display: flex; justify-content: space-between; font-size: 11px; }
+  .intel-body { padding: 12px; background: #fff; }
+  .mil-banner { background: #d32f2f; color: #fff; padding: 4px; font-weight: bold; text-align: center; font-size: 10px; letter-spacing: 1px; }
+  .intel-row { border-bottom: 1px solid #eee; padding: 5px 0; display: flex; justify-content: space-between; font-size: 12px; font-family: 'Share Tech Mono', monospace; }
   .intel-row b { color: #555; }
+  .intel-row span { color: #000; font-weight: bold; text-align: right; max-width: 65%; }
 </style>
 </head>
 <body>
 
 <div id="hud">
   <div style="font-size: 18px; font-weight: bold; letter-spacing: 2px;">🛰️ STRATCOM v17.0</div>
-  <div style="font-size: 11px; color: #00ffcc;">INTEL: NEXRAD RADAR & GLOBAL ASSETS</div>
+  <div id="hud-intel" style="font-size: 11px; color: #00ffcc; letter-spacing: 1px;">INTEL: INITIALIZING RADAR MATRIX...</div>
   
   <div class="filter-row">
-    <div id="f-mil" class="tgl-btn" onclick="toggleFilter('mil')">MILITARY</div>
+    <div id="f-mil" class="tgl-btn" onclick="toggleFilter('mil')">MILITARY / GOV</div>
     <div id="f-heli" class="tgl-btn" onclick="toggleFilter('heli')">ROTORS</div>
     <div id="f-infra" class="tgl-btn active" onclick="toggleFilter('infra')">INFRA</div>
-    <div class="tgl-btn refresh-btn" onclick="scrapeRadar()">SCAN AREA</div>
+    <div id="scan-btn" class="tgl-btn refresh-btn" onclick="scrapeRadar()">SCAN AREA</div>
   </div>
 </div>
 
@@ -54,28 +69,88 @@
 
 <script>
 const WORKER_URL = "https://adsb-bridge.lezattackpenguinskindig.workers.dev/";
-const ICAO_MILITARY = [0xAE0000, 0xAF0000, 0xAD0000, 0x43C000];
 
 let map, flightLayers, infraLayers, nexradLayer;
 let isUpdating = false;
 const filters = { mil: false, heli: false, infra: true };
 
-function getCountry(hex) {
-    const h = parseInt(hex, 16);
-    if (h >= 0xA00000 && h <= 0xAFFFFF) return "United States 🇺🇸";
-    if (h >= 0x400000 && h <= 0x43FFFF) return "United Kingdom 🇬🇧";
-    if (h >= 0x380000 && h <= 0x3BFFFF) return "France 🇫🇷";
-    if (h >= 0x3C0000 && h <= 0x3FFFFF) return "Germany 🇩🇪";
-    if (h >= 0x7C0000 && h <= 0x7CFFFF) return "Australia 🇦🇺";
-    if (h >= 0x880000 && h <= 0x88FFFF) return "South Korea 🇰🇷";
-    if (h >= 0x890000 && h <= 0x89FFFF) return "Japan 🇯🇵";
-    return "International / Unknown";
+// Format Aircraft Types from ICAO codes + DB Description Fallback
+function formatAircraftType(typeCode, desc) {
+    const types = {
+        'B738': 'Boeing 737-800', 'B737': 'Boeing 737', 'B739': 'Boeing 737-900',
+        'A320': 'Airbus A320', 'A321': 'Airbus A321', 'A319': 'Airbus A319',
+        'B77W': 'Boeing 777-300ER', 'B788': 'Boeing 787-8', 'B789': 'Boeing 787-9',
+        'C17': 'Boeing C-17 Globemaster III', 'C130': 'Lockheed C-130 Hercules',
+        'K35R': 'Boeing KC-135 Stratotanker', 'H60': 'UH-60 Black Hawk',
+        'B52': 'Boeing B-52 Stratofortress', 'F35': 'Lockheed F-35 Lightning II',
+        'A10': 'Fairchild Republic A-10 Thunderbolt II', 'P8': 'Boeing P-8 Poseidon'
+    };
+    return types[typeCode] || desc || typeCode || 'Unknown';
 }
+
+function formatCategory(cat) {
+    if (!cat) return 'Unknown';
+    const cats = {
+        'A1': 'Light', 'A2': 'Small', 'A3': 'Large (Airliner)',
+        'A4': 'High Vortex Large', 'A5': 'Heavy', 'A6': 'High Performance', 'A7': 'Rotorcraft'
+    };
+    return cats[cat] || cat;
+}
+
+// Decode Military Branch via DB Registry, Callsign, Hex, or Airframe Inference
+function getMilitaryBranch(ac) {
+    const cs = (ac.flight || '').trim().toUpperCase();
+    const hx = (ac.hex || '').toUpperCase();
+    const op = (ac.ownOp || '').toUpperCase();
+    const type = (ac.t || '').toUpperCase();
+
+    // 1. Check ADS-B Live Registry (Owner/Operator Database)
+    if (op.includes('AIR FORCE') || op.includes('USAF')) return 'US AIR FORCE';
+    if (op.includes('NAVY') || op.includes('USN')) return 'US NAVY';
+    if (op.includes('MARINE') || op.includes('USMC')) return 'US MARINE CORPS';
+    if (op.includes('ARMY')) return 'US ARMY';
+    if (op.includes('COAST GUARD') || op.includes('USCG')) return 'US COAST GUARD';
+    if (op.includes('CUSTOMS') || op.includes('CBP')) return 'US CUSTOMS & BORDER PATROL';
+    if (op.includes('ROYAL AIR FORCE')) return 'ROYAL AIR FORCE (UK)';
+    if (op.includes('CANADIAN ARMED FORCES')) return 'ROYAL CANADIAN AIR FORCE';
+
+    // 2. Civil-Registered DoD Contractors
+    if (cs.startsWith('JANET')) return 'USAF CONTRACTOR (JANET)';
+    if (cs.startsWith('OMEGA')) return 'DOD REFUELING CONTRACTOR (OMEGA)';
+    if (cs.startsWith('ATAC') || cs.startsWith('DRAKEN') || cs.startsWith('DRK') || cs.startsWith('BDR') || cs.startsWith('META') || cs.startsWith('VADER')) return 'DOD ADVERSARY CONTRACTOR';
+
+    // 3. International Checks via Hex / Callsign
+    if (hx.startsWith('43C') || cs.startsWith('RRR') || cs.startsWith('ASY') || cs.startsWith('VORTEX')) return 'ROYAL AIR FORCE (UK)';
+    if (cs.startsWith('CFC') || cs.startsWith('CAN')) return 'ROYAL CANADIAN AIR FORCE';
+    
+    // 4. US Tactical Callsign Matrix
+    // Added 'HIVE' here:
+    const usafCallsigns = ['RCH', 'REACH', 'SPAR', 'AF', 'MOOSE', 'BONE', 'QID', 'HOBO', 'JESSE', 'HUSKY', 'KING', 'SHADOW', 'TIGER', 'VIPER', 'SNOOPY', 'GHOST', 'BAT', 'DEATH', 'THUG', 'SLAM', 'JEDI', 'HIVE'];
+    
+    if (usafCallsigns.some(prefix => cs.startsWith(prefix))) return 'US AIR FORCE';
+    
+    if (cs.startsWith('NAVY') || cs.startsWith('VV') || cs.startsWith('CNV') || cs.startsWith('LANCE') || cs.startsWith('TRIDENT') || cs.startsWith('TALON')) return 'US NAVY';
+    if (cs.startsWith('VM') || cs.startsWith('USMC') || cs.startsWith('RAIDER') || cs.startsWith('OTIS') || cs.startsWith('WARLORD')) return 'US MARINE CORPS';
+    if (cs.startsWith('PAT') || cs.startsWith('GUARD') || cs.startsWith('ARMY') || cs.startsWith('DUSTOFF') || cs.startsWith('DUKE')) return 'US ARMY';
+    if (cs.startsWith('CG') || cs.startsWith('COAST') || (cs.startsWith('C') && cs.length === 5 && !isNaN(cs.substring(1)))) return 'US COAST GUARD';
+
+    // 5. Hex + Airframe Inference
+    if (hx.startsWith('AE')) {
+        if (['C17', 'K35R', 'B52', 'B1', 'B2', 'A10', 'F16', 'F22', 'F35', 'C130', 'C5'].includes(type)) return 'US AIR FORCE (INFERRED)';
+        if (['P8', 'E6'].includes(type)) return 'US NAVY (INFERRED)';
+        return 'US ARMED FORCES';
+    }
+    
+    return 'GOV / MILITARY ASSET (UNSPECIFIED)';
+}
+
 
 function toggleFilter(type) {
     filters[type] = !filters[type];
     document.getElementById(`f-${type}`).classList.toggle('active');
-    if(type === 'infra') filters[type] ? infraLayers.addTo(map) : map.removeLayer(infraLayers);
+    if(type === 'infra') {
+        if(filters[type]) infraLayers.addTo(map); else map.removeLayer(infraLayers);
+    }
     scrapeRadar();
 }
 
@@ -85,16 +160,19 @@ function initMap() {
 
     map = L.map('map', { zoomControl: false, layers: [darkMap] }).setView([32.8, -79.9], 6);
     
+    const hudElement = document.getElementById('hud');
+    L.DomEvent.disableClickPropagation(hudElement);
+    L.DomEvent.disableScrollPropagation(hudElement);
+
     flightLayers = L.layerGroup().addTo(map);
     infraLayers = L.layerGroup().addTo(map);
 
-    // FIXED NEXRAD WMS
     nexradLayer = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
         layers: 'nexrad-n0r-900913',
         format: 'image/png',
         transparent: true,
         version: '1.1.1',
-        opacity: 0.5,
+        opacity: 0.35,
         zIndex: 500
     }).addTo(map);
 
@@ -104,11 +182,13 @@ function initMap() {
     }, {
         "NEXRAD Weather": nexradLayer,
         "Infrastructure": infraLayers
-    }, { collapsed: false }).addTo(map);
+    }, { collapsed: true }).addTo(map);
 
     loadInfrastructure();
     scrapeRadar();
+    
     setInterval(scrapeRadar, 30000);
+    map.on('moveend', () => { scrapeRadar(); });
 }
 
 function loadInfrastructure() {
@@ -130,50 +210,140 @@ function loadInfrastructure() {
 async function scrapeRadar() {
     if(isUpdating) return;
     isUpdating = true;
+    
+    const scanBtn = document.getElementById('scan-btn');
+    const intelLabel = document.getElementById('hud-intel');
+    if(scanBtn) scanBtn.innerText = "⚡ SCANNING...";
+    if(intelLabel) intelLabel.innerText = "INTEL: CONNECTING TO SATELLITE UPLINK...";
+    
     const c = map.getCenter();
-    const url = `${WORKER_URL}?url=${encodeURIComponent(`https://api.adsb.lol/v2/lat/${c.lat.toFixed(2)}/lon/${c.lng.toFixed(2)}/dist/500`)}&p=${Date.now()}`;
+    const url = `${WORKER_URL}?url=${encodeURIComponent(`https://api.adsb.lol/v2/lat/${c.lat.toFixed(4)}/lon/${c.lng.toFixed(4)}/dist/250`)}&_t=${Date.now()}`;
 
     try {
         const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP Error Status: ${res.status}`);
+        
         const data = await res.json();
         const acs = data.ac || [];
+        
         flightLayers.clearLayers();
+        let renderedCount = 0;
 
         acs.forEach(ac => {
             if (!ac.lat || !ac.lon) return;
-            const isMil = ac.mil === 1 || ICAO_MILITARY.some(m => (parseInt(ac.hex, 16) & 0xFF0000) === m);
-            const isHeli = (ac.t && (ac.t.includes('H6') || ac.t.includes('EC'))) || ac.category === 'A7';
-            const hex = ac.hex.toUpperCase();
+            
+            const hex = (ac.hex || '').toUpperCase();
+            const flightCode = (ac.flight || '').trim().toUpperCase();
+            
+            const isContractor = flightCode.startsWith('JANET') || flightCode.startsWith('OMEGA') || flightCode.startsWith('ATAC') || flightCode.startsWith('DRAKEN') || flightCode.startsWith('DRK') || flightCode.startsWith('BDR') || flightCode.startsWith('META') || flightCode.startsWith('VADER');
+            
+            const isMil = ac.mil === 1 || (ac.dbFlags && (ac.dbFlags & 1) === 1) || hex.startsWith('AE') || hex.startsWith('43C') || isContractor;
+            const isHeli = (ac.t && (ac.t.includes('H6') || ac.t.includes('EC') || ac.t.includes('B06'))) || ac.category === 'A7';
             
             if (filters.mil && !isMil) return;
             if (filters.heli && !isHeli) return;
 
+            renderedCount++;
             let color = isMil ? '#f33' : (isHeli ? '#fc0' : '#0fc');
-            L.marker([ac.lat, ac.lon], { 
+            
+            const jetPath = "M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z";
+            const heliPath = "M12 2v2h8v2h-8v3h4v2h-4v7h-2v-7H8v-2h4V7H4V5h8V2h2z";
+            const chosenPath = isHeli ? heliPath : jetPath;
+
+            const marker = L.marker([ac.lat, ac.lon], { 
                 icon: L.divIcon({ 
-                    html: `<div style="transform: rotate(${ac.track || 0}deg);"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="${color}" d="${isHeli ? 'M12 2L13 3H21V5H13L12 6H15V8H13V12H15V14H13V19H11V14H9V12H11V8H9V6H12L11 3H3V1H11L12 2Z' : 'M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z'}"/></svg></div>`,
-                    className: 'ac-icon', iconSize: [24, 24] 
+                    html: `<div style="transform: rotate(${ac.track || 0}deg); width:24px; height:24px;"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="${color}" d="${chosenPath}"/></svg></div>`,
+                    className: 'ac-icon', 
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12], 
+                    popupAnchor: [0, -10] 
                 }) 
-            })
-            .bindPopup(`
+            });
+
+            const headingDisplay = (ac.track !== undefined && ac.track !== null) ? Math.round(ac.track).toString().padStart(3, '0') + '°' : '---';
+
+            // Pass the entire `ac` object to the branch detector to read the registry data
+            const branchRow = isMil ? `<div class="intel-row"><b>Operator:</b> <span style="color: #d32f2f;">${getMilitaryBranch(ac)}</span></div>` : '';
+
+            marker.bindPopup(`
                 <div class="popup-intel">
                     <div class="img-frame">
-                        <div class="no-img-label">SEARCHING DATABASE...</div>
-                        <img class="ac-photo" src="https://hexdb.io/images/${hex}.jpg" onerror="this.style.display='none'">
+                        <div class="no-img-label status-label">FETCHING DATABASE...</div>
+                        <img class="ac-photo fetch-img" src="" style="opacity: 0;" referrerpolicy="no-referrer" crossorigin="anonymous">
                     </div>
-                    ${isMil ? '<div class="mil-banner">MILITARY ASSET</div>' : ''}
-                    <div class="intel-body">
-                        <div class="intel-row"><b>CALLSIGN:</b> <span>${ac.flight || '---'}</span></div>
-                        <div class="intel-row"><b>COUNTRY:</b> <span>${getCountry(hex)}</span></div>
-                        <div class="intel-row"><b>HEX ID:</b> <span>${hex}</span></div>
-                        <div class="intel-row"><b>ALT:</b> <span>${ac.alt_baro || '---'} FT</span></div>
-                        <div class="intel-row"><b>SPD:</b> <span>${Math.round(ac.gs || 0)} KTS</span></div>
+                    ${isMil ? '<div class="mil-banner">MILITARY / GOV ASSET</div>' : ''}
+                    <div class="intel-body" style="font-family: 'Share Tech Mono', monospace; font-size: 13px;">
+                        ${branchRow}
+                        <div class="intel-row"><b>Aircraft:</b> <span>${formatAircraftType(ac.t, ac.desc)}</span></div>
+                        <div class="intel-row"><b>Category:</b> <span>${formatCategory(ac.category)}</span></div>
+                        <div class="intel-row"><b>Callsign:</b> <span>${(ac.flight || '---').trim()}</span></div>
+                        <div class="intel-row"><b>Altitude:</b> <span>${ac.alt_baro ? ac.alt_baro.toLocaleString() + ' ft' : '---'}</span></div>
+                        <div class="intel-row"><b>Speed:</b> <span>${Math.round(ac.gs || 0)} kts</span></div>
+                        <div class="intel-row"><b>Heading:</b> <span>${headingDisplay}</span></div>
                     </div>
                 </div>
-            `).addTo(flightLayers);
+            `);
+
+            marker.on('popupopen', (e) => {
+                const popupNode = e.popup.getElement();
+                const imgEl = popupNode.querySelector('.fetch-img');
+                const lblEl = popupNode.querySelector('.status-label');
+                
+                const cleanHex = hex.replace('~', '').trim().toLowerCase();
+                const reg = ac.r ? ac.r.trim().toLowerCase() : null;
+
+                const loadFallback = (msg) => {
+                    if(lblEl) {
+                        lblEl.innerText = msg;
+                        lblEl.style.color = '#ffcc00';
+                    }
+                    imgEl.src = isHeli ? 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Helicopter_silhouette.svg/512px-Helicopter_silhouette.svg.png' : 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Airliner_silhouette_black.svg/512px-Airliner_silhouette_black.svg.png';
+                    imgEl.style.filter = 'invert(1) opacity(0.2) drop-shadow(0 0 5px #00ffcc)'; 
+                    imgEl.style.objectFit = 'contain';
+                    imgEl.style.padding = '20px';
+                    imgEl.onload = () => { imgEl.style.opacity = 1; };
+                };
+
+                if (imgEl.dataset.loaded === 'true') return;
+
+                const apiUrl = reg ? `https://api.planespotters.net/pub/photos/reg/${reg}` : `https://api.planespotters.net/pub/photos/hex/${cleanHex}`;
+
+                fetch(apiUrl)
+                    .then(r => r.json())
+                    .then(d => {
+                        imgEl.dataset.loaded = 'true';
+                        if (d.photos && d.photos.length > 0) {
+                            imgEl.style.filter = 'none'; 
+                            imgEl.style.objectFit = 'cover';
+                            imgEl.style.padding = '0';
+                            imgEl.src = d.photos[0].thumbnail_large.src;
+                            imgEl.onload = () => {
+                                imgEl.style.opacity = 1;
+                                if(lblEl) lblEl.style.display = 'none';
+                            };
+                            imgEl.onerror = () => loadFallback('IMAGE BLOCKED BY BROWSER');
+                        } else {
+                            loadFallback('NOT FOUND IN DATABASE');
+                        }
+                    })
+                    .catch(() => {
+                        imgEl.dataset.loaded = 'true';
+                        loadFallback('UPLINK BLOCKED');
+                    });
+            });
+
+            marker.addTo(flightLayers);
         });
-    } catch (e) { console.log("Uplink Error"); }
-    finally { isUpdating = false; }
+
+        if(intelLabel) intelLabel.innerText = `INTEL: ${renderedCount} TARGETS IN AREA RANGE`;
+
+    } catch (e) { 
+        console.error("Tactical Uplink Error: ", e); 
+        if(intelLabel) intelLabel.innerText = "INTEL: UPLINK TIMEOUT. RETRYING...";
+    } finally { 
+        isUpdating = false; 
+        if(scanBtn) scanBtn.innerText = "SCAN AREA";
+    }
 }
 
 window.onload = () => { setTimeout(initMap, 500); };
